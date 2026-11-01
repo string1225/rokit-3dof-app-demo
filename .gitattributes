@@ -1,0 +1,13 @@
+* text=auto
+gradlew text eol=lf
+*.bat text eol=crlf
+*.java text eol=lf
+*.kts text eol=lf
+*.xml text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+gradle/wrapper/gradle-wrapper.jar binary
+# Preserve the exact pinned upstream bytes.
+third_party/Fusion/Fusion/** -text
+third_party/Fusion/LICENSE.md -text
+third_party/Fusion/README.md -text
