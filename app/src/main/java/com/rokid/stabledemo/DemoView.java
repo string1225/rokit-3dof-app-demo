@@ -129,8 +129,9 @@ final class DemoView extends View {
                 follower.recenter(state.relative,drawStartNs); referenceEpoch=state.referenceEpoch;
             }
             if(stabilized) {
-                LevelFollow.Result result=follower.update(state.relative,drawStartNs);
+                LevelFollow.Result result=follower.update(state.relative,drawStartNs,projection);
                 applied=result.compensatedHead; anchor=result.anchor;
+                if(result.snapped) { notice="超界 · 已水平回中"; noticeUntilMs=now+1200; }
             } else follower.recenter(state.relative,drawStartNs);
             Quaternion head=applied;
             boolean visible=true;
@@ -172,7 +173,7 @@ final class DemoView extends View {
 
     private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s) {
         small.setTextSize(19);
-        canvas.drawText(stabilized ? "3DoF · 水平缓慢回中" : "3DoF 维稳 · 关",20,25,small);
+        canvas.drawText(stabilized ? "3DoF · 水平自动回中" : "3DoF 维稳 · 关",20,25,small);
         small.setTextAlign(Paint.Align.RIGHT); small.setTextSize(15);
         canvas.drawText("循环 "+frame.round,460,25,small);
         small.setTextAlign(Paint.Align.LEFT);

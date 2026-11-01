@@ -3,6 +3,9 @@ package com.rokid.stabledemo;
 import android.content.Intent;
 import android.accessibilityservice.AccessibilityService;
 import android.os.SystemClock;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -13,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.rokid.stabledemo.core.Quaternion;
 import com.rokid.stabledemo.core.LevelFollow;
+import com.rokid.stabledemo.core.MotionDiagnostics;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +25,33 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class DemoInstrumentedTest {
+    @Test public void offscreenPanelReappearsAtCenterOnTheSameFrame() throws Exception {
+        java.lang.reflect.Method publish=TrackingController.class.getDeclaredMethod(
+                "publish",Quaternion.class,long.class,boolean.class);
+        publish.setAccessible(true);
+        onMain(() -> {
+            android.content.Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+            TrackingController tracker=new TrackingController(context,false,false);
+            DemoView view=new DemoView(context,30,1.5,12,() -> {},() -> {},() -> {});
+            Bitmap bitmap=Bitmap.createBitmap(480,640,Bitmap.Config.ARGB_8888);
+            Canvas canvas=new Canvas(bitmap);
+            Quaternion upright=Quaternion.axisAngle(1,0,0,Math.PI/2);
+            try {
+                view.layout(0,0,480,640); view.begin(tracker,new MotionDiagnostics());
+                publish.invoke(tracker,upright,SystemClock.elapsedRealtimeNanos(),false);
+                view.draw(canvas);
+                assertTrue("Baseline panel must be centered",Color.green(bitmap.getPixel(30,320))>128);
+                bitmap.eraseColor(Color.BLACK);
+                Quaternion turned=upright.multiply(Quaternion.axisAngle(0,1,0,Math.toRadians(16)));
+                publish.invoke(tracker,turned,SystemClock.elapsedRealtimeNanos(),false);
+                view.draw(canvas);
+                assertTrue("Crossing 50% horizontal offset must recenter within this rendered frame",
+                        Color.green(bitmap.getPixel(30,320))>128);
+            } catch(ReflectiveOperationException e) { throw new AssertionError(e); }
+            finally { view.end(); bitmap.recycle(); }
+        });
+    }
+
     @Test public void tiltedStartupMustNotBecomeTheHorizontalReference() throws Exception {
         TrackingController tracker=new TrackingController(
                 InstrumentationRegistry.getInstrumentation().getTargetContext(),false,false);

@@ -1,6 +1,6 @@
 package com.rokid.stabledemo.core;
 
-/** Fast head compensation with an independent, slowly moving yaw/pitch anchor. */
+/** Fast head compensation with slow yaw/pitch following and optional viewport-boundary recentering. */
 public final class LevelFollow {
     public static final double DEFAULT_TAU_SECONDS=1.5;
     public static final double DEFAULT_SPEED_DEG_S=12;
@@ -16,6 +16,13 @@ public final class LevelFollow {
     public void reset() { yaw=pitch=0; lastNs=0; }
 
     public Result update(Quaternion head,long nowNs) {
+        return update(head,nowNs,null);
+    }
+
+    /** Check the screen-space limit before slow following can conceal a just-crossed boundary. */
+    public Result update(Quaternion head,long nowNs,Projection viewport) {
+        boolean snapped=viewport!=null && viewport.centerOutsideViewport(anchor().inverse().multiply(head));
+        if(snapped) recenter(head,nowNs);
         double[] target=direction(head);
         if(lastNs>0 && nowNs>lastNs) {
             double elapsed=(nowNs-lastNs)*1e-9;
@@ -29,9 +36,13 @@ public final class LevelFollow {
             }
         }
         if(nowNs>lastNs) lastNs=nowNs;
-        Quaternion anchor=Quaternion.axisAngle(0,1,0,yaw).multiply(Quaternion.axisAngle(1,0,0,pitch));
+        Quaternion anchor=anchor();
         // Projection uses inverse(compensatedHead) = inverse(head) * anchor.
-        return new Result(anchor,anchor.inverse().multiply(head));
+        return new Result(anchor,anchor.inverse().multiply(head),snapped);
+    }
+
+    private Quaternion anchor() {
+        return Quaternion.axisAngle(0,1,0,yaw).multiply(Quaternion.axisAngle(1,0,0,pitch));
     }
 
     /** Position-only recenter: never absorb the head's roll into the anchor. */
@@ -48,6 +59,9 @@ public final class LevelFollow {
 
     public static final class Result {
         public final Quaternion anchor,compensatedHead;
-        Result(Quaternion anchor,Quaternion compensatedHead) { this.anchor=anchor; this.compensatedHead=compensatedHead; }
+        public final boolean snapped;
+        Result(Quaternion anchor,Quaternion compensatedHead,boolean snapped) {
+            this.anchor=anchor; this.compensatedHead=compensatedHead; this.snapped=snapped;
+        }
     }
 }
