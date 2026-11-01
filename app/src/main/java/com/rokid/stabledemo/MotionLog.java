@@ -1,0 +1,67 @@
+package com.rokid.stabledemo;
+
+import android.os.SystemClock;
+import com.rokid.stabledemo.core.MotionDiagnostics;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+final class MotionLog {
+    private final MotionDiagnostics diagnostics;
+    private final BufferedWriter frames,metrics;
+    private final ScheduledExecutorService io=Executors.newSingleThreadScheduledExecutor(r -> new Thread(r,"Motion-CSV"));
+    private final ScheduledFuture<?> task;
+    private volatile String error="";
+    MotionLog(File directory,MotionDiagnostics diagnostics) throws IOException {
+        this.diagnostics=diagnostics;
+        BufferedWriter openedFrames=null,openedMetrics=null;
+        try {
+            openedFrames=Files.newBufferedWriter(new File(directory,"motion_frames.csv").toPath(),StandardCharsets.UTF_8);
+            openedMetrics=Files.newBufferedWriter(new File(directory,"motion_metrics.csv").toPath(),StandardCharsets.UTF_8);
+            openedFrames.write("estimated_presentation_elapsed_ns,input_pitch_deg,estimated_residual_pitch_deg,applied_pitch_deg,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms\n");
+            openedMetrics.write("elapsed_ns,dominant_hz,weighted_mean_hz,input_rms_deg,residual_rms_deg,imu_hz,draw_hz,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms,uncertainty_ms\n");
+        } catch(IOException e) {
+            if(openedFrames!=null) try { openedFrames.close(); } catch(IOException ignored) { }
+            if(openedMetrics!=null) try { openedMetrics.close(); } catch(IOException ignored) { }
+            throw e;
+        }
+        frames=openedFrames; metrics=openedMetrics;
+        task=io.scheduleAtFixedRate(this::flush,1,1,TimeUnit.SECONDS);
+    }
+    String error() { return error; }
+    private void flush() {
+        try {
+            for(MotionDiagnostics.Record r:diagnostics.drainRecords()) frames.write(r.presentationNs+","+values(
+                    r.inputPitchDeg,r.residualPitchDeg,r.appliedPitchDeg,r.sampleAgeMs,r.cpuMs,r.appMs,r.estimatedDisplayMs)+"\n");
+            long now=SystemClock.elapsedRealtimeNanos(); MotionDiagnostics.Snapshot s=diagnostics.snapshot(now);
+            metrics.write(now+","+values(s.dominantHz,s.meanHz,s.inputRmsDeg,s.residualRmsDeg,s.sampleHz,s.renderHz,
+                    s.sampleAgeMs,s.cpuDrawMs,s.appFrameMs,s.estimatedDisplayMs,s.uncertaintyMs)+"\n");
+            frames.flush(); metrics.flush();
+        } catch(IOException e) { error="诊断CSV写入失败"; }
+    }
+    void close(Runnable afterClosed) {
+        task.cancel(false);
+        io.execute(() -> {
+            flush();
+            try { frames.close(); } catch(IOException e) { error="诊断CSV关闭失败"; }
+            try { metrics.close(); } catch(IOException e) { error="诊断CSV关闭失败"; }
+            if(afterClosed!=null) afterClosed.run();
+        });
+        io.shutdown();
+    }
+    private static String values(double... values) {
+        StringBuilder out=new StringBuilder();
+        for(int i=0;i<values.length;i++) {
+            if(i>0) out.append(',');
+            if(Double.isFinite(values[i])) out.append(String.format(Locale.ROOT,"%.6f",values[i]));
+        }
+        return out.toString();
+    }
+}

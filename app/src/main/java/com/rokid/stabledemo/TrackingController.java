@@ -11,6 +11,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import com.rokid.stabledemo.core.PoseState;
 import com.rokid.stabledemo.core.ImuTiming;
+import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.Quaternion;
 
 /** Sensor callbacks, native state and reference updates all run on one dedicated thread. */
@@ -28,6 +29,7 @@ final class TrackingController implements SensorEventListener {
     private final SensorManager manager;
     private final boolean demoAxes;
     private final boolean forceFusion;
+    private final MotionDiagnostics diagnostics;
     private volatile Snapshot snapshot = new Snapshot(Quaternion.IDENTITY, 0, false, "等待 IMU", 0);
     private HandlerThread thread;
     private Handler handler;
@@ -42,8 +44,12 @@ final class TrackingController implements SensorEventListener {
     private int gyroPeriodUs;
 
     TrackingController(Context context, boolean demoAxes, boolean forceFusion) {
+        this(context,demoAxes,forceFusion,null);
+    }
+    TrackingController(Context context, boolean demoAxes, boolean forceFusion,MotionDiagnostics diagnostics) {
         manager=(SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         this.demoAxes=demoAxes; this.forceFusion=forceFusion;
+        this.diagnostics=diagnostics;
     }
     Snapshot latest() { return snapshot; }
 
@@ -69,13 +75,14 @@ final class TrackingController implements SensorEventListener {
 
     void recenter() {
         Handler current=handler;
-        if (current != null) current.post(() -> reference=null);
+        if (current != null) current.post(() -> { reference=null; if(diagnostics!=null) diagnostics.reset(); });
     }
 
     private void selectSource() {
         if (!active) return;
         manager.unregisterListener(this); releaseNative();
         generation++; reference=null;
+        if(diagnostics!=null) diagnostics.reset();
         lastGyroNs=lastIntegratedNs=lastAccelNs=lastPoseNs=0; hz=0;
         while (candidate < 3) {
             sourceType=candidate==0 ? Sensor.TYPE_GAME_ROTATION_VECTOR :
@@ -166,8 +173,9 @@ final class TrackingController implements SensorEventListener {
             reference=null;
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
-            if (reference == null) reference=absolute;
+            if (reference == null) { reference=absolute; if(diagnostics!=null) diagnostics.reset(); }
             Quaternion relative=reference.inverse().multiply(absolute).toView(demoAxes);
+            if(diagnostics!=null) diagnostics.onPose(relative,timestampNs,SystemClock.elapsedRealtimeNanos());
             snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz);
         }
     }

@@ -45,16 +45,17 @@ public class DemoInstrumentedTest {
         } finally { FusionBridge.destroy(handle); }
     }
 
-    @Test public void oneStartButtonAndAccessibleTogglePreserveText() {
+    @Test public void twoModeMenuAndAccessibleTogglePreserveText() {
         AtomicReference<MainActivity> current=new AtomicReference<>();
         try (ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
           try {
             scenario.onActivity(a -> {
                 current.set(a);
                 Button button=findButton(a.findViewById(android.R.id.content));
-                assertNotNull(button); assertEquals("开始",button.getText().toString());
+                assertNotNull(button); assertEquals("3DoF 测试",button.getText().toString());
+                assertEquals(2,countButtons(a.findViewById(android.R.id.content)));
                 assertFalse(a.demoView().isRunning()); button.performClick();
-                assertTrue(a.demoView().isRunning()); assertEquals(View.GONE,button.getVisibility());
+                assertTrue(a.demoView().isRunning()); assertFalse(button.isShown());
             });
             awaitText(current.get(),8);
             onMain(() -> {
@@ -68,7 +69,7 @@ public class DemoInstrumentedTest {
             onMain(() -> {
                 MainActivity a=current.get();
                 assertFalse(a.demoView().isRunning());
-                assertEquals(View.VISIBLE,findButton(a.findViewById(android.R.id.content)).getVisibility());
+                assertTrue(findButton(a.findViewById(android.R.id.content)).isShown());
             });
           } finally { finish(current.get()); }
         }
@@ -140,5 +141,11 @@ public class DemoInstrumentedTest {
             if (result != null) return result;
         }
         return null;
+    }
+    private static int countButtons(View view) {
+        if(view instanceof Button) return 1;
+        int count=0;
+        if(view instanceof ViewGroup) for(int i=0;i<((ViewGroup)view).getChildCount();i++) count+=countButtons(((ViewGroup)view).getChildAt(i));
+        return count;
     }
 }

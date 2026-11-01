@@ -17,7 +17,9 @@ import com.rokid.stabledemo.core.Playback;
 import com.rokid.stabledemo.core.PoseState;
 import com.rokid.stabledemo.core.Projection;
 import com.rokid.stabledemo.core.Quaternion;
+import com.rokid.stabledemo.core.MotionDiagnostics;
 import java.util.Locale;
+import java.util.function.Supplier;
 
 /** Hardware Canvas uses a projective homography for the entire pre-laid-out text plane. */
 final class DemoView extends View {
@@ -29,12 +31,16 @@ final class DemoView extends View {
     private final Playback playback=new Playback(DEMO_TEXT,90,2400);
     private final Projection projection;
     private final Matrix homography=new Matrix();
-    private final RectF panel=new RectF(30,94,450,378);
-    private final float[] source={30,94,450,94,450,378,30,378};
+    private final RectF panel=new RectF(30,78,450,252);
+    private final float[] source={30,78,450,78,450,252,30,252};
     private final float[] destination=new float[8];
     private final GestureDetector gestures;
     private final Runnable clickAction;
+    private final MotionChart chart=new MotionChart();
     private TrackingController tracker;
+    private MotionDiagnostics diagnostics;
+    private Supplier<String> powerStatus=() -> "";
+    private double appFrameMs;
     private boolean running, stabilized=true, foreground;
     private long startMs=-1, noticeUntilMs;
     private String notice="";
@@ -49,11 +55,11 @@ final class DemoView extends View {
         setContentDescription("3DoF 打字机演示；单击切换维稳，长按回正，双击返回");
         setFocusable(true);
         line.setColor(Color.GREEN); line.setStyle(Paint.Style.STROKE); line.setStrokeWidth(1.5f);
-        text.setColor(Color.GREEN); text.setTextSize(23);
+        text.setColor(Color.GREEN); text.setTextSize(18);
         small.setColor(Color.GREEN); small.setTextSize(16);
         textLayout=StaticLayout.Builder.obtain(DEMO_TEXT,0,DEMO_TEXT.length(),text,376)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false)
-                .setLineSpacing(12,1).build();
+                .setLineSpacing(7,1).build();
         projection=new Projection(480,480,horizontalFov);
         gestures=new GestureDetector(context,new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
@@ -63,9 +69,14 @@ final class DemoView extends View {
         });
     }
 
-    void begin(TrackingController tracker) {
+    void begin(TrackingController tracker,MotionDiagnostics diagnostics) {
         this.tracker=tracker; running=true; foreground=true; stabilized=true; startMs=-1;
+        this.diagnostics=diagnostics; appFrameMs=0;
         frame=playback.at(0); invalidate();
+    }
+    void setPowerStatus(Supplier<String> status) { powerStatus=status; }
+    void setFrameDurationNs(long duration) {
+        if(duration>0 && duration<500_000_000L) appFrameMs=appFrameMs==0?duration*1e-6:appFrameMs*.9+duration*1e-7;
     }
     void end() { running=false; tracker=null; invalidate(); }
     void suspend() { foreground=false; tracker=null; }
@@ -81,6 +92,7 @@ final class DemoView extends View {
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas); canvas.drawColor(Color.BLACK);
         if (!running || !foreground || tracker == null) return;
+        long drawStartNs=SystemClock.elapsedRealtimeNanos();
         float scale=Math.min(getWidth()/480f,getHeight()/640f);
         canvas.save();
         canvas.translate((getWidth()-480*scale)/2,(getHeight()-640*scale)/2);
@@ -91,9 +103,11 @@ final class DemoView extends View {
         boolean fresh=state.ready && PoseState.isFresh(state.timestampNs,SystemClock.elapsedRealtimeNanos());
         if (fresh && startMs < 0) startMs=now;
         frame=playback.at(startMs < 0 ? 0 : now-startMs);
-        drawStatus(canvas,state,fresh,now);
+        MotionDiagnostics.Snapshot analysis=diagnostics.snapshot(drawStartNs);
+        drawStatus(canvas,state,fresh,now,analysis);
+        Quaternion applied=stabilized ? state.relative : Quaternion.IDENTITY;
         if (fresh) {
-            Quaternion head=stabilized ? state.relative : Quaternion.IDENTITY;
+            Quaternion head=applied;
             boolean visible=true;
             for (int i=0;i<4;i++) {
                 double[] projected=projection.point(source[2*i],source[2*i+1],head);
@@ -108,35 +122,48 @@ final class DemoView extends View {
         } else {
             small.setTextAlign(Paint.Align.CENTER);
             small.setTextSize(22);
-            canvas.drawText(state.ready ? "IMU 数据中断" : state.status,240,218,small);
-            small.setTextSize(16);
-            canvas.drawText(state.ready ? "长按重新连接 · 双击返回" : "保持头部静止片刻",240,256,small);
+            canvas.drawText(state.ready ? "IMU 数据中断" : state.status,240,151,small);
+            small.setTextSize(14);
+            canvas.drawText(state.ready ? "长按重新连接 · 双击返回" : "保持头部静止片刻",240,185,small);
             small.setTextAlign(Paint.Align.LEFT);
         }
-        canvas.drawLine(20,422,460,422,line);
-        small.setTextSize(16);
-        canvas.drawText("单击：维稳开关   长按：回正",20,447,small);
-        canvas.drawText("双击：返回   ·   仅补偿头部旋转",20,473,small);
+        chart.draw(canvas,analysis);
+        small.setTextSize(13);
+        canvas.drawText(powerStatus.get(),20,411,small);
+        canvas.drawText(String.format(Locale.ROOT,"RMS 输入%s° / 残差%s°  绘制%sHz",
+                number(analysis.inputRmsDeg),number(analysis.residualRmsDeg),number(analysis.renderHz)),20,433,small);
+        canvas.drawLine(20,441,460,441,line);
+        canvas.drawText("单击：维稳开关   长按：回正",20,458,small);
+        canvas.drawText("双击：返回保存   延迟/残差为软件估计",20,477,small);
         canvas.restore();
+        long endNs=SystemClock.elapsedRealtimeNanos();
+        if(fresh) {
+            double refreshMs=1000.0/(getDisplay()!=null?getDisplay().getRefreshRate():60.0);
+            double cpu=(endNs-drawStartNs)*1e-6;
+            long estimatedPresentation=drawStartNs+(long)((Math.max(cpu,appFrameMs)+refreshMs)*1e6);
+            diagnostics.frameSubmitted(applied,endNs,Math.max(endNs,estimatedPresentation),state.timestampNs,cpu,appFrameMs,refreshMs);
+        }
         postInvalidateOnAnimation();
     }
 
-    private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now) {
+    private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s) {
         small.setTextSize(19);
         canvas.drawText(stabilized ? "3DoF 维稳 · 开" : "3DoF 维稳 · 关",20,25,small);
         small.setTextAlign(Paint.Align.RIGHT); small.setTextSize(15);
         canvas.drawText("循环 "+frame.round,460,25,small);
         small.setTextAlign(Paint.Align.LEFT);
-        String status=fresh ? String.format(Locale.ROOT,"%s  %.0f Hz",state.status,state.hz)
+        String status=fresh ? String.format(Locale.ROOT,"%s %.0fHz  抖动主频%s / 均频%sHz",state.status,
+                Double.isFinite(s.sampleHz)?s.sampleHz:state.hz,number(s.dominantHz),number(s.meanHz))
                 : state.ready ? "数据中断 · 未维稳" : state.status;
-        canvas.drawText(now < noticeUntilMs ? notice : status,20,55,small);
+        small.setTextSize(13);
+        canvas.drawText(now < noticeUntilMs ? notice : status,20,46,small);
+        canvas.drawText(String.format(Locale.ROOT,"样本%sms  绘制%sms  显示≈%s±%sms",number(s.sampleAgeMs),
+                number(s.cpuDrawMs),number(s.estimatedDisplayMs),number(s.uncertaintyMs)),20,65,small);
     }
 
     private void drawTextPanel(Canvas canvas,long now) {
         canvas.drawRoundRect(panel,8,8,line);
-        canvas.drawLine(46,111,64,111,line);
-        canvas.drawLine(46,111,46,129,line);
-        canvas.save(); canvas.translate(52,127);
+        canvas.save(); canvas.translate(52,91);
         int visibleEnd=frame.text.length();
         for (int i=0;i<textLayout.getLineCount();i++) {
             int start=textLayout.getLineStart(i), end=Math.min(textLayout.getLineEnd(i),visibleEnd);
@@ -148,11 +175,12 @@ final class DemoView extends View {
             int cursorLine=textLayout.getLineForOffset(visibleEnd);
             float x=textLayout.getPrimaryHorizontal(visibleEnd);
             float y=textLayout.getLineBaseline(cursorLine);
-            canvas.drawLine(x+3,y-20,x+3,y+3,line);
+            canvas.drawLine(x+3,y-16,x+3,y+3,line);
         }
         canvas.restore();
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) { return gestures.onTouchEvent(event); }
     @Override public boolean performClick() { super.performClick(); clickAction.run(); return true; }
+    private static String number(double value) { return Double.isFinite(value)?String.format(Locale.ROOT,"%.1f",value):"--"; }
 }

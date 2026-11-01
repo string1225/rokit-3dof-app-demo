@@ -20,6 +20,24 @@ public final class Quaternion {
 
     public Quaternion inverse() { return new Quaternion(-x, -y, -z, w); }
 
+    public Quaternion interpolate(Quaternion other,double fraction) {
+        double t=Math.max(0,Math.min(1,fraction));
+        double dot=x*other.x+y*other.y+z*other.z+w*other.w;
+        double sign=dot<0?-1:1; dot=Math.min(1,Math.abs(dot));
+        double a=1-t,b=t;
+        if(dot<.9995) {
+            double angle=Math.acos(dot),denominator=Math.sin(angle);
+            a=Math.sin((1-t)*angle)/denominator; b=Math.sin(t*angle)/denominator;
+        }
+        return new Quaternion(a*x+b*other.x*sign,a*y+b*other.y*sign,
+                a*z+b*other.z*sign,a*w+b*other.w*sign);
+    }
+
+    public double pitchDegrees() {
+        double[] forward=rotate(new double[]{0,0,-1});
+        return Math.toDegrees(Math.atan2(forward[1],Math.hypot(forward[0],forward[2])));
+    }
+
     public Quaternion multiply(Quaternion b) {
         return new Quaternion(w*b.x+x*b.w+y*b.z-z*b.y,
                 w*b.y-x*b.z+y*b.w+z*b.x, w*b.z+x*b.y-y*b.x+z*b.w,
