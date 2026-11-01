@@ -13,6 +13,7 @@ import com.rokid.stabledemo.core.PoseState;
 import com.rokid.stabledemo.core.ImuTiming;
 import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.Quaternion;
+import com.rokid.stabledemo.core.LevelReference;
 
 /** Sensor callbacks, native state and reference updates all run on one dedicated thread. */
 final class TrackingController implements SensorEventListener {
@@ -44,7 +45,7 @@ final class TrackingController implements SensorEventListener {
     private long generation, nativeHandle, lastGyroNs, lastIntegratedNs, lastAccelNs, lastPoseNs;
     private float ax, ay, az, hz;
     private final float[] nativeResult = new float[5];
-    private Quaternion reference;
+    private LevelReference reference;
     private long referenceEpoch;
     private String sourceName;
     private int gyroPeriodUs;
@@ -179,8 +180,8 @@ final class TrackingController implements SensorEventListener {
             reference=null;
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
-            if (reference == null) { reference=absolute; referenceEpoch++; if(diagnostics!=null) diagnostics.reset(); }
-            Quaternion relative=reference.inverse().multiply(absolute).toView(demoAxes);
+            if (reference == null) { reference=new LevelReference(absolute,demoAxes); referenceEpoch++; if(diagnostics!=null) diagnostics.reset(); }
+            Quaternion relative=reference.relative(absolute);
             if(diagnostics!=null) diagnostics.onPose(relative,timestampNs,SystemClock.elapsedRealtimeNanos());
             snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch);
         }

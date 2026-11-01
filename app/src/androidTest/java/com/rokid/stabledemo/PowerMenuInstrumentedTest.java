@@ -25,6 +25,43 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class PowerMenuInstrumentedTest {
+    @Test public void menuLongPressKeyExitsWithoutStartingATest() {
+        AtomicReference<MainActivity> current=new AtomicReference<>();
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+          try {
+            scenario.onActivity(current::set);
+            key(KeyEvent.KEYCODE_PROG_BLUE);
+            onMain(() -> {
+                assertTrue("Menu long press must exit",current.get().isFinishing()||current.get().isDestroyed());
+                assertFalse(current.get().demoView().isRunning());
+                assertNull(current.get().powerBenchmark());
+            });
+          } finally { if(current.get()!=null) onMain(current.get()::finish); }
+        }
+    }
+
+    @Test public void menuLongPressBroadcastExitsWithoutStartingATest() {
+        AtomicReference<MainActivity> current=new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean exited=new java.util.concurrent.atomic.AtomicBoolean();
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+          try {
+            scenario.onActivity(current::set);
+            Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+            context.sendBroadcast(new Intent(MainActivity.LONG_PRESS).setPackage(context.getPackageName()));
+            long deadline=SystemClock.elapsedRealtime()+2000;
+            while(!exited.get() && SystemClock.elapsedRealtime()<deadline) {
+                onMain(() -> exited.set(current.get().isFinishing()||current.get().isDestroyed()));
+                if(!exited.get()) SystemClock.sleep(50);
+            }
+            assertTrue("Firmware menu long press must exit",exited.get());
+            onMain(() -> {
+                assertFalse(current.get().demoView().isRunning());
+                assertNull(current.get().powerBenchmark());
+            });
+          } finally { if(current.get()!=null) onMain(current.get()::finish); }
+        }
+    }
+
     @Test public void glassesMenuSelectsPowerAndBackAbortsAndSaves() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         for(String permission:new String[]{Manifest.permission.CAMERA,Manifest.permission.RECORD_AUDIO})

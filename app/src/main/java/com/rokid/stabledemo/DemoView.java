@@ -125,7 +125,9 @@ final class DemoView extends View {
         drawStatus(canvas,state,fresh,now,analysis);
         Quaternion applied=Quaternion.IDENTITY,anchor=Quaternion.IDENTITY;
         if (fresh) {
-            if(state.referenceEpoch!=referenceEpoch) { follower.reset(); referenceEpoch=state.referenceEpoch; }
+            if(state.referenceEpoch!=referenceEpoch) {
+                follower.recenter(state.relative,drawStartNs); referenceEpoch=state.referenceEpoch;
+            }
             if(stabilized) {
                 LevelFollow.Result result=follower.update(state.relative,drawStartNs);
                 applied=result.compensatedHead; anchor=result.anchor;

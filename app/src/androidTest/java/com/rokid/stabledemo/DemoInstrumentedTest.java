@@ -12,6 +12,7 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.rokid.stabledemo.core.Quaternion;
+import com.rokid.stabledemo.core.LevelFollow;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +21,30 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class DemoInstrumentedTest {
+    @Test public void tiltedStartupMustNotBecomeTheHorizontalReference() throws Exception {
+        TrackingController tracker=new TrackingController(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(),false,false);
+        Quaternion absolute=Quaternion.axisAngle(0,0,1,.7)
+                .multiply(Quaternion.axisAngle(1,0,0,Math.PI/2))
+                .multiply(Quaternion.axisAngle(0,1,0,.3))
+                .multiply(Quaternion.axisAngle(1,0,0,-.15))
+                .multiply(Quaternion.axisAngle(0,0,1,Math.toRadians(-2)));
+        // Inject a fused sensor pose without depending on the emulator's physical orientation.
+        java.lang.reflect.Method publish=TrackingController.class.getDeclaredMethod(
+                "publish",Quaternion.class,long.class,boolean.class);
+        publish.setAccessible(true);
+        long now=SystemClock.elapsedRealtimeNanos();
+        publish.invoke(tracker,absolute,now,false);
+        TrackingController.Snapshot state=tracker.latest();
+        assertTrue(state.ready);
+        LevelFollow follower=new LevelFollow(1.5,12);
+        follower.recenter(state.relative,now);
+        LevelFollow.Result frame=follower.update(state.relative,now+16_000_000L);
+        Quaternion panelInWorld=absolute.multiply(frame.compensatedHead.inverse());
+        assertEquals("A startup head tilt must not tilt the floating panel relative to gravity",
+                0,panelInWorld.rotate(new double[]{1,0,0})[2],1e-8);
+    }
+
     @Test public void nativeFusionConvergesAndIntegratesYaw() {
         long handle=FusionBridge.create(200,35);
         assertTrue(handle != 0);

@@ -131,7 +131,7 @@ public final class MainActivity extends ComponentActivity {
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(Math.round(370*scale),Math.round(64*scale));
             lp.topMargin=Math.round(20*scale); menu.addView(button,lp);
         }
-        TextView guide=label("眼镜单击切换 · 双击或长按进入",16*scale);
+        TextView guide=label("单击切换 · 双击选中 · 长按退出",16*scale);
         LinearLayout.LayoutParams guideLp=new LinearLayout.LayoutParams(-1,Math.round(44*scale));
         guideLp.topMargin=Math.round(20*scale); menu.addView(guide,guideLp);
         menuStatus=label("记录整机耗电 · 续航测试需保持前台",14*scale);
@@ -184,7 +184,8 @@ public final class MainActivity extends ComponentActivity {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
             recorder.metadata("axes",demoAxes?"demo":"android"); recorder.metadata("horizontal_fov_deg",horizontalFov);
             recorder.metadata("follow_tau_seconds",followTau); recorder.metadata("follow_speed_deg_s",followSpeed);
-            recorder.metadata("follow_policy","Yaw/pitch anchor follows slowly; roll stays compensated relative to the startup level reference. Head compensation uses the latest pose without this slow filter.");
+            recorder.metadata("level_reference","Gravity-aligned from the fused pose (Android/Fusion ENU world +Z up); startup head tilt is retained for compensation. Optical/IMU mounting alignment is not calibrated.");
+            recorder.metadata("follow_policy","Yaw/pitch anchor follows slowly; roll stays compensated relative to the gravity-aligned level reference. Head compensation uses the latest pose without this slow filter.");
             recorder.metadata("motion_residual","Retrospective IMU alignment relative to each submitted frame's moving level anchor; intentional follow is excluded. Software model only, not optical measurement.");
             recorder.startStage("3dof","3DoF维稳与诊断"); motionLog=new MotionLog(recorder.directory(),diagnostics);
         } catch(IOException e) { loggingError="耗电/诊断文件创建失败"; if(recorder!=null) recorder.note("motion_log_error",String.valueOf(e)); }
@@ -243,7 +244,7 @@ public final class MainActivity extends ComponentActivity {
         else returnToMenu("user_back");
     }
     private void longPress() {
-        if(mode==Mode.MENU) { enterSelected(); return; }
+        if(mode==Mode.MENU) { finish(); return; }
         if(mode!=Mode.DOF) return;
         long now=SystemClock.elapsedRealtime(); if(now-lastCenterMs<200) return; lastCenterMs=now;
         if(tracker!=null && tracker.latest().ready && com.rokid.stabledemo.core.PoseState.isFresh(tracker.latest().timestampNs,SystemClock.elapsedRealtimeNanos())) {
