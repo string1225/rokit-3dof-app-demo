@@ -59,6 +59,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean longKey;
     private int selected,benchmarkGeneration;
     private float horizontalFov=30;
+    private float followTau=1.5f,followSpeed=12f;
     private long stageDurationMs=300_000;
     private final Window.OnFrameMetricsAvailableListener frameListener=(window,metrics,dropped) -> {
         if(mode==Mode.DOF && demo!=null) demo.setFrameDurationNs(metrics.getMetric(FrameMetrics.TOTAL_DURATION));
@@ -79,6 +80,10 @@ public final class MainActivity extends ComponentActivity {
         super.onCreate(state);
         horizontalFov=getIntent().getFloatExtra("horizontal_fov_deg",30f);
         if(!Float.isFinite(horizontalFov)||horizontalFov<5||horizontalFov>120) horizontalFov=30;
+        followTau=getIntent().getFloatExtra("follow_tau_seconds",1.5f);
+        if(!Float.isFinite(followTau)||followTau<.2f||followTau>10) followTau=1.5f;
+        followSpeed=getIntent().getFloatExtra("follow_speed_deg_s",12f);
+        if(!Float.isFinite(followSpeed)||followSpeed<1||followSpeed>60) followSpeed=12f;
         demoAxes=AxisProfile.usesLegacyDemo(getIntent().getStringExtra("axes"));
         forceFusion=getIntent().getBooleanExtra("force_fusion",false);
         int stageSeconds=getIntent().getIntExtra("benchmark_stage_seconds",300);
@@ -89,7 +94,7 @@ public final class MainActivity extends ComponentActivity {
             else { pendingPowerStart=false; menuStatus.setText("续航测试需要相机和麦克风权限，请授权后重试"); }
         });
         FrameLayout root=new FrameLayout(this); root.setBackgroundColor(Color.BLACK);
-        demo=new DemoView(this,horizontalFov,this::click,this::doubleClick,this::longPress);
+        demo=new DemoView(this,horizontalFov,followTau,followSpeed,this::click,this::doubleClick,this::longPress);
         root.addView(demo,new FrameLayout.LayoutParams(-1,-1));
         powerView=new PowerTestView(this,this::doubleClick);
         root.addView(powerView,new FrameLayout.LayoutParams(-1,-1)); powerView.setVisibility(View.GONE);
@@ -178,7 +183,9 @@ public final class MainActivity extends ComponentActivity {
         try {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
             recorder.metadata("axes",demoAxes?"demo":"android"); recorder.metadata("horizontal_fov_deg",horizontalFov);
-            recorder.metadata("motion_residual","Retrospective IMU alignment at estimated presentation time; software model only, not optical measurement.");
+            recorder.metadata("follow_tau_seconds",followTau); recorder.metadata("follow_speed_deg_s",followSpeed);
+            recorder.metadata("follow_policy","Yaw/pitch anchor follows slowly; roll stays compensated relative to the startup level reference. Head compensation uses the latest pose without this slow filter.");
+            recorder.metadata("motion_residual","Retrospective IMU alignment relative to each submitted frame's moving level anchor; intentional follow is excluded. Software model only, not optical measurement.");
             recorder.startStage("3dof","3DoF维稳与诊断"); motionLog=new MotionLog(recorder.directory(),diagnostics);
         } catch(IOException e) { loggingError="耗电/诊断文件创建失败"; if(recorder!=null) recorder.note("motion_log_error",String.valueOf(e)); }
         demo.setPowerStatus(() -> {
@@ -240,7 +247,7 @@ public final class MainActivity extends ComponentActivity {
         if(mode!=Mode.DOF) return;
         long now=SystemClock.elapsedRealtime(); if(now-lastCenterMs<200) return; lastCenterMs=now;
         if(tracker!=null && tracker.latest().ready && com.rokid.stabledemo.core.PoseState.isFresh(tracker.latest().timestampNs,SystemClock.elapsedRealtimeNanos())) {
-            tracker.recenter(); demo.centered(); if(recorder!=null) recorder.note("recenter","Reference reset to current pose");
+            demo.centered(); if(recorder!=null) recorder.note("recenter","Level anchor recentered in yaw/pitch; roll compensation preserved");
         } else beginDof();
     }
     // Rokid firmware encodes touchpad double-tap as BACK, including entering the menu item.

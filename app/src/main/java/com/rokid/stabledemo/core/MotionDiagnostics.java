@@ -37,8 +37,8 @@ public final class MotionDiagnostics {
             if(previous==null || f.time<previous.time) continue;
             double t=(double)(f.time-previous.time)/(timestampNs-previous.time);
             Quaternion actual=previous.q.interpolate(orientation,t);
-            double residual=actual.multiply(f.applied.inverse()).pitchDegrees();
-            Record record=new Record(f.time,actual.pitchDegrees(),residual,f.applied.pitchDegrees(),f.age,f.cpu,f.app,f.estimate);
+            double residual=f.anchor.inverse().multiply(actual).multiply(f.applied.inverse()).pitchDegrees();
+            Record record=new Record(f.time,actual.pitchDegrees(),residual,f.applied.pitchDegrees(),f.anchor,f.age,f.cpu,f.app,f.estimate);
             pairs.addLast(record); records.addLast(record);
             while(records.size()>2048) records.removeFirst();
         }
@@ -46,6 +46,11 @@ public final class MotionDiagnostics {
     }
 
     public synchronized void frameSubmitted(Quaternion applied,long frameEndNs,long expectedPresentationNs,
+            long sourceSampleNs,double drawCpuMs,double frameTotalMs,double refreshMs) {
+        frameSubmitted(applied,Quaternion.IDENTITY,frameEndNs,expectedPresentationNs,sourceSampleNs,drawCpuMs,frameTotalMs,refreshMs);
+    }
+
+    public synchronized void frameSubmitted(Quaternion applied,Quaternion anchor,long frameEndNs,long expectedPresentationNs,
             long sourceSampleNs,double drawCpuMs,double frameTotalMs,double refreshMs) {
         if(sourceSampleNs<=0 || frameEndNs<sourceSampleNs || expectedPresentationNs<frameEndNs
                 || expectedPresentationNs-frameEndNs>500_000_000L) return;
@@ -60,7 +65,7 @@ public final class MotionDiagnostics {
             if(frameTimes.size()>1) renderHz=(frameTimes.size()-1)*1e9/(frameEndNs-frameTimes.peekFirst());
         }
         lastFrameNs=frameEndNs;
-        pending.add(new Frame(applied,expectedPresentationNs,age,drawCpuMs,frameTotalMs,estimate));
+        pending.add(new Frame(applied,anchor,expectedPresentationNs,age,drawCpuMs,frameTotalMs,estimate));
         while(pending.size()>180) pending.remove();
     }
 
@@ -157,9 +162,12 @@ public final class MotionDiagnostics {
     public static final class Record {
         public final long presentationNs;
         public final double inputPitchDeg,residualPitchDeg,appliedPitchDeg,sampleAgeMs,cpuMs,appMs,estimatedDisplayMs;
-        Record(long time,double input,double residual,double applied,double age,double cpu,double app,double estimate) {
+        public final double anchorYawDeg,anchorPitchDeg;
+        Record(long time,double input,double residual,double applied,Quaternion anchor,double age,double cpu,double app,double estimate) {
             presentationNs=time; inputPitchDeg=input; residualPitchDeg=residual; appliedPitchDeg=applied;
             sampleAgeMs=age; cpuMs=cpu; appMs=app; estimatedDisplayMs=estimate;
+            anchorPitchDeg=anchor.pitchDegrees(); double[] forward=anchor.rotate(new double[]{0,0,-1});
+            anchorYawDeg=Math.toDegrees(Math.atan2(-forward[0],-forward[2]));
         }
     }
     private static final class Pose {
@@ -167,9 +175,9 @@ public final class MotionDiagnostics {
         Pose(Quaternion q,long time) { this.q=q; this.time=time; pitch=q.pitchDegrees(); }
     }
     private static final class Frame {
-        final Quaternion applied; final long time; final double age,cpu,app,estimate;
-        Frame(Quaternion q,long time,double age,double cpu,double app,double estimate) {
-            applied=q; this.time=time; this.age=age; this.cpu=cpu; this.app=app; this.estimate=estimate;
+        final Quaternion applied,anchor; final long time; final double age,cpu,app,estimate;
+        Frame(Quaternion q,Quaternion anchor,long time,double age,double cpu,double app,double estimate) {
+            applied=q; this.anchor=anchor; this.time=time; this.age=age; this.cpu=cpu; this.app=app; this.estimate=estimate;
         }
     }
 }

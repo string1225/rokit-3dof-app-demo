@@ -72,6 +72,22 @@ public class MotionDiagnosticsTest {
         for(int i=1;i<=12;i++) d.onPose(Quaternion.IDENTITY,START+i*10_000_000L,START+i*10_000_000L);
         assertEquals(2,d.drainRecords().size());
     }
+    @Test public void intentionalLevelFollowIsExcludedFromEstimatedJitter() {
+        MotionDiagnostics d=new MotionDiagnostics(); LevelFollow follow=new LevelFollow(1.5,12);
+        Quaternion held=Quaternion.axisAngle(1,0,0,Math.toRadians(15));
+        follow.update(Quaternion.IDENTITY,START);
+        for(int i=0;i<=500;i++) {
+            long t=START+i*10_000_000L;
+            d.onPose(held,t,t+2_000_000L);
+            if(i%2==0) {
+                LevelFollow.Result r=follow.update(held,t+2_000_000L);
+                d.frameSubmitted(r.compensatedHead,r.anchor,t+2_000_000L,t+20_000_000L,t,1,3,16);
+            }
+        }
+        java.util.List<MotionDiagnostics.Record> rows=d.drainRecords();
+        assertTrue(rows.size()>100);
+        for(MotionDiagnostics.Record row:rows) assertEquals("Planned anchor motion is not jitter",0,row.residualPitchDeg,1e-7);
+    }
     private static MotionDiagnostics signal(double frequency,double amplitude,boolean compensate) {
         MotionDiagnostics d=new MotionDiagnostics();
         for(int i=0;i<=500;i++) {

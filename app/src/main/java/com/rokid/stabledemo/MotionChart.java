@@ -24,19 +24,19 @@ final class MotionChart {
         for(double v:s.inputCurve) amplitude=Math.max(amplitude,Math.abs(v));
         for(double v:s.residualCurve) amplitude=Math.max(amplitude,Math.abs(v));
         amplitude=Math.ceil(amplitude*10)/10;
-        canvas.drawText(String.format(Locale.ROOT,"俯仰°  输入 ━   估计残差 ┄  ±%.1f°",amplitude),20,276,label);
-        canvas.drawRect(30,284,450,370,guide); canvas.drawLine(30,327,450,327,guide);
-        for(int i=1;i<4;i++) canvas.drawLine(30+i*105,284,30+i*105,370,guide);
-        canvas.save(); canvas.clipRect(30,284,450,370);
+        canvas.drawText(String.format(Locale.ROOT,"俯仰°  输入 ━   估计残差 ┄  ±%.1f°",amplitude),20,329,label);
+        canvas.drawRect(30,338,450,394,guide); canvas.drawLine(30,366,450,366,guide);
+        for(int i=1;i<4;i++) canvas.drawLine(30+i*105,338,30+i*105,394,guide);
+        canvas.save(); canvas.clipRect(30,338,450,394);
         trace(canvas,s.seconds,s.inputCurve,amplitude,input);
         trace(canvas,s.seconds,s.residualCurve,amplitude,residual);
         canvas.restore();
-        canvas.drawText("最近4秒 · 残差基于预计显示时间，非实测",20,389,label);
+        canvas.drawText("最近4秒 · 已排除主动回中 · 残差非实测",20,409,label);
     }
     private void trace(Canvas canvas,double[] seconds,double[] values,double amplitude,Paint paint) {
         path.reset();
         for(int i=0;i<values.length;i++) {
-            float x=(float)(450+seconds[i]*105),y=(float)(327-values[i]/amplitude*40);
+            float x=(float)(450+seconds[i]*105),y=(float)(366-values[i]/amplitude*26);
             if(i==0) path.moveTo(x,y); else path.lineTo(x,y);
         }
         canvas.drawPath(path,paint);

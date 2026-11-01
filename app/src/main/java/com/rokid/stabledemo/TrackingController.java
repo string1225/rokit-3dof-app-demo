@@ -22,8 +22,13 @@ final class TrackingController implements SensorEventListener {
         final boolean ready;
         final String status;
         final float hz;
+        final long referenceEpoch;
         Snapshot(Quaternion relative, long timestampNs, boolean ready, String status, float hz) {
+            this(relative,timestampNs,ready,status,hz,0);
+        }
+        Snapshot(Quaternion relative,long timestampNs,boolean ready,String status,float hz,long referenceEpoch) {
             this.relative=relative; this.timestampNs=timestampNs; this.ready=ready; this.status=status; this.hz=hz;
+            this.referenceEpoch=referenceEpoch;
         }
     }
     private final SensorManager manager;
@@ -40,6 +45,7 @@ final class TrackingController implements SensorEventListener {
     private float ax, ay, az, hz;
     private final float[] nativeResult = new float[5];
     private Quaternion reference;
+    private long referenceEpoch;
     private String sourceName;
     private int gyroPeriodUs;
 
@@ -173,10 +179,10 @@ final class TrackingController implements SensorEventListener {
             reference=null;
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
-            if (reference == null) { reference=absolute; if(diagnostics!=null) diagnostics.reset(); }
+            if (reference == null) { reference=absolute; referenceEpoch++; if(diagnostics!=null) diagnostics.reset(); }
             Quaternion relative=reference.inverse().multiply(absolute).toView(demoAxes);
             if(diagnostics!=null) diagnostics.onPose(relative,timestampNs,SystemClock.elapsedRealtimeNanos());
-            snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz);
+            snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch);
         }
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
