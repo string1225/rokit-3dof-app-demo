@@ -14,6 +14,7 @@ import com.rokid.stabledemo.core.ImuTiming;
 import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.Quaternion;
 import com.rokid.stabledemo.core.LevelReference;
+import com.rokid.stabledemo.core.PitchPredictor;
 
 /** Sensor callbacks, native state and reference updates all run on one dedicated thread. */
 final class TrackingController implements SensorEventListener {
@@ -24,18 +25,25 @@ final class TrackingController implements SensorEventListener {
         final String status;
         final float hz;
         final long referenceEpoch;
+        final PitchPredictor.State prediction;
         Snapshot(Quaternion relative, long timestampNs, boolean ready, String status, float hz) {
             this(relative,timestampNs,ready,status,hz,0);
         }
         Snapshot(Quaternion relative,long timestampNs,boolean ready,String status,float hz,long referenceEpoch) {
+            this(relative,timestampNs,ready,status,hz,referenceEpoch,PitchPredictor.State.EMPTY);
+        }
+        Snapshot(Quaternion relative,long timestampNs,boolean ready,String status,float hz,long referenceEpoch,PitchPredictor.State prediction) {
             this.relative=relative; this.timestampNs=timestampNs; this.ready=ready; this.status=status; this.hz=hz;
             this.referenceEpoch=referenceEpoch;
+            this.prediction=prediction;
         }
     }
     private final SensorManager manager;
     private final boolean demoAxes;
     private final boolean forceFusion;
     private final MotionDiagnostics diagnostics;
+    private final PitchPredictor predictor=new PitchPredictor();
+    private final boolean trainPrediction;
     private volatile Snapshot snapshot = new Snapshot(Quaternion.IDENTITY, 0, false, "等待 IMU", 0);
     private HandlerThread thread;
     private Handler handler;
@@ -54,9 +62,13 @@ final class TrackingController implements SensorEventListener {
         this(context,demoAxes,forceFusion,null);
     }
     TrackingController(Context context, boolean demoAxes, boolean forceFusion,MotionDiagnostics diagnostics) {
+        this(context,demoAxes,forceFusion,diagnostics,true);
+    }
+    TrackingController(Context context,boolean demoAxes,boolean forceFusion,MotionDiagnostics diagnostics,boolean trainPrediction) {
         manager=(SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         this.demoAxes=demoAxes; this.forceFusion=forceFusion;
         this.diagnostics=diagnostics;
+        this.trainPrediction=trainPrediction;
     }
     Snapshot latest() { return snapshot; }
 
@@ -88,7 +100,7 @@ final class TrackingController implements SensorEventListener {
     private void selectSource() {
         if (!active) return;
         manager.unregisterListener(this); releaseNative();
-        generation++; reference=null;
+        generation++; reference=null; predictor.reset();
         if(diagnostics!=null) diagnostics.reset();
         lastGyroNs=lastIntegratedNs=lastAccelNs=lastPoseNs=0; hz=0;
         while (candidate < 3) {
@@ -177,13 +189,14 @@ final class TrackingController implements SensorEventListener {
         }
         lastPoseNs=timestampNs;
         if (initializing) {
-            reference=null;
+            reference=null; predictor.reset();
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
-            if (reference == null) { reference=new LevelReference(absolute,demoAxes); referenceEpoch++; if(diagnostics!=null) diagnostics.reset(); }
+            if (reference == null) { reference=new LevelReference(absolute,demoAxes); referenceEpoch++; predictor.reset(); if(diagnostics!=null) diagnostics.reset(); }
             Quaternion relative=reference.relative(absolute);
             if(diagnostics!=null) diagnostics.onPose(relative,timestampNs,SystemClock.elapsedRealtimeNanos());
-            snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch);
+            snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch,
+                    trainPrediction?predictor.onPose(relative,timestampNs):PitchPredictor.State.EMPTY);
         }
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }

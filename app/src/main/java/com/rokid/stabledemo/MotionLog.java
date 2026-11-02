@@ -25,8 +25,8 @@ final class MotionLog {
         try {
             openedFrames=Files.newBufferedWriter(new File(directory,"motion_frames.csv").toPath(),StandardCharsets.UTF_8);
             openedMetrics=Files.newBufferedWriter(new File(directory,"motion_metrics.csv").toPath(),StandardCharsets.UTF_8);
-            openedFrames.write("estimated_presentation_elapsed_ns,input_pitch_deg,estimated_residual_pitch_deg,applied_pitch_deg,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms,anchor_yaw_deg,anchor_pitch_deg\n");
-            openedMetrics.write("elapsed_ns,dominant_hz,weighted_mean_hz,input_rms_deg,residual_rms_deg,imu_hz,draw_hz,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms,uncertainty_ms\n");
+            openedFrames.write("estimated_presentation_elapsed_ns,input_pitch_deg,estimated_residual_pitch_deg,applied_pitch_deg,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms,anchor_yaw_deg,anchor_pitch_deg,baseline_estimated_residual_pitch_deg,prediction_enabled,prediction_horizon_ms,periodic_hz,prediction_strength,prediction_delta_deg\n");
+            openedMetrics.write("elapsed_ns,dominant_hz,weighted_mean_hz,input_rms_deg,residual_rms_deg,imu_hz,draw_hz,sample_age_ms,cpu_draw_ms,app_frame_ms,estimated_sample_to_display_ms,uncertainty_ms,baseline_residual_rms_deg,prediction_enabled,prediction_horizon_ms,periodic_hz,prediction_strength,prediction_delta_deg\n");
         } catch(IOException e) {
             if(openedFrames!=null) try { openedFrames.close(); } catch(IOException ignored) { }
             if(openedMetrics!=null) try { openedMetrics.close(); } catch(IOException ignored) { }
@@ -39,10 +39,12 @@ final class MotionLog {
     private void flush() {
         try {
             for(MotionDiagnostics.Record r:diagnostics.drainRecords()) frames.write(r.presentationNs+","+values(
-                    r.inputPitchDeg,r.residualPitchDeg,r.appliedPitchDeg,r.sampleAgeMs,r.cpuMs,r.appMs,r.estimatedDisplayMs,r.anchorYawDeg,r.anchorPitchDeg)+"\n");
+                    r.inputPitchDeg,r.residualPitchDeg,r.appliedPitchDeg,r.sampleAgeMs,r.cpuMs,r.appMs,r.estimatedDisplayMs,r.anchorYawDeg,r.anchorPitchDeg,
+                    r.baselineResidualPitchDeg,r.prediction.enabled?1:0,r.prediction.horizonMs,r.prediction.frequencyHz,r.prediction.strength,r.prediction.correctionDeg)+"\n");
             long now=SystemClock.elapsedRealtimeNanos(); MotionDiagnostics.Snapshot s=diagnostics.snapshot(now);
             metrics.write(now+","+values(s.dominantHz,s.meanHz,s.inputRmsDeg,s.residualRmsDeg,s.sampleHz,s.renderHz,
-                    s.sampleAgeMs,s.cpuDrawMs,s.appFrameMs,s.estimatedDisplayMs,s.uncertaintyMs)+"\n");
+                    s.sampleAgeMs,s.cpuDrawMs,s.appFrameMs,s.estimatedDisplayMs,s.uncertaintyMs,s.baselineResidualRmsDeg,
+                    s.prediction.enabled?1:0,s.prediction.horizonMs,s.prediction.frequencyHz,s.prediction.strength,s.prediction.correctionDeg)+"\n");
             frames.flush(); metrics.flush();
         } catch(IOException e) { error="诊断CSV写入失败"; }
     }

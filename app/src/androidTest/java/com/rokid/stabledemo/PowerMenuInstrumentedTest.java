@@ -108,6 +108,10 @@ public class PowerMenuInstrumentedTest {
             for(String name:new String[]{"motion_frames.csv","motion_metrics.csv"}) {
                 byte[] local=Files.readAllBytes(new File(run,name).toPath());
                 assertTrue("Motion CSV must contain live rows",new String(local,java.nio.charset.StandardCharsets.UTF_8).split("\n").length>2);
+                String[] lines=new String(local,java.nio.charset.StandardCharsets.UTF_8).split("\n");
+                assertTrue(lines[0].contains("prediction_horizon_ms")); assertTrue(lines[0].contains("baseline"));
+                int columns=lines[0].split(",",-1).length;
+                for(String row:lines) assertEquals("CSV columns must survive blank/unavailable prediction fields",columns,row.split(",",-1).length);
                 assertArrayEquals("Final export must match all flushed bytes",local,Files.readAllBytes(new File(exported,name).toPath()));
             }
             JSONObject metadata=new JSONObject(new String(Files.readAllBytes(new File(run,"metadata.json").toPath()),java.nio.charset.StandardCharsets.UTF_8));

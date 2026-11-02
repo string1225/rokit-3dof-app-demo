@@ -19,6 +19,7 @@ import com.rokid.stabledemo.core.Projection;
 import com.rokid.stabledemo.core.Quaternion;
 import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.LevelFollow;
+import com.rokid.stabledemo.core.PitchPredictor;
 import java.util.Locale;
 import java.util.function.Supplier;
 
@@ -45,6 +46,8 @@ final class DemoView extends View {
     private Supplier<String> powerStatus=() -> "";
     private double appFrameMs;
     private boolean running, stabilized=true, foreground;
+    private boolean predictionEnabled=true;
+    private double predictionLeadMs=15;
     private long startMs=-1, noticeUntilMs;
     private long referenceEpoch=Long.MIN_VALUE;
     private String notice="";
@@ -84,6 +87,11 @@ final class DemoView extends View {
         frame=playback.at(0); invalidate();
     }
     void setPowerStatus(Supplier<String> status) { powerStatus=status; }
+    void setPredictionOptions(boolean enabled,double leadMs) {
+        predictionEnabled=enabled;
+        predictionLeadMs=Double.isFinite(leadMs)?Math.max(5,Math.min(20,leadMs)):15;
+        setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
+    }
     void setFrameDurationNs(long duration) {
         if(duration>0 && duration<500_000_000L) appFrameMs=appFrameMs==0?duration*1e-6:appFrameMs*.9+duration*1e-7;
     }
@@ -126,15 +134,18 @@ final class DemoView extends View {
         if (fresh && startMs < 0) startMs=now;
         frame=playback.at(startMs < 0 ? 0 : now-startMs);
         MotionDiagnostics.Snapshot analysis=diagnostics.snapshot(drawStartNs);
-        drawStatus(canvas,state,fresh,now,analysis);
-        Quaternion applied=Quaternion.IDENTITY,anchor=Quaternion.IDENTITY;
+        PitchPredictor.Prediction prediction=state.prediction.predict(state.relative,drawStartNs,predictionLeadMs,
+                predictionEnabled&&stabilized&&fresh);
+        drawStatus(canvas,state,fresh,now,analysis,prediction);
+        Quaternion applied=Quaternion.IDENTITY,anchor=Quaternion.IDENTITY,baseline=Quaternion.IDENTITY;
         if (fresh) {
             if(state.referenceEpoch!=referenceEpoch) {
                 follower.recenter(state.relative,drawStartNs); referenceEpoch=state.referenceEpoch;
             }
             if(stabilized) {
                 LevelFollow.Result result=follower.update(state.relative,drawStartNs,projection);
-                applied=result.compensatedHead; anchor=result.anchor;
+                baseline=result.compensatedHead; anchor=result.anchor;
+                applied=anchor.inverse().multiply(prediction.pose);
                 if(result.snapped) { notice="超界 · 已水平回中"; noticeUntilMs=now+1200; }
             } else follower.recenter(state.relative,drawStartNs);
             Quaternion head=applied;
@@ -161,8 +172,8 @@ final class DemoView extends View {
         chart.draw(canvas,analysis);
         small.setTextSize(13);
         canvas.drawText(powerStatus.get(),20,428,small);
-        canvas.drawText(String.format(Locale.ROOT,"RMS 输入%s° / 残差%s°  绘制%sHz",
-                number(analysis.inputRmsDeg),number(analysis.residualRmsDeg),number(analysis.renderHz)),20,447,small);
+        canvas.drawText(String.format(Locale.ROOT,"RMS 入%s° 普%s° 当前%s°  %sHz",
+                number(analysis.inputRmsDeg),number(analysis.baselineResidualRmsDeg),number(analysis.residualRmsDeg),number(analysis.renderHz)),20,447,small);
         canvas.drawLine(20,456,460,456,line);
         canvas.drawText("单击开关 · 长按水平回中 · 双击返回保存",20,477,small);
         canvas.restore();
@@ -171,12 +182,12 @@ final class DemoView extends View {
             double refreshMs=1000.0/(getDisplay()!=null?getDisplay().getRefreshRate():60.0);
             double cpu=(endNs-drawStartNs)*1e-6;
             long estimatedPresentation=drawStartNs+(long)((Math.max(cpu,appFrameMs)+refreshMs)*1e6);
-            diagnostics.frameSubmitted(applied,anchor,endNs,Math.max(endNs,estimatedPresentation),state.timestampNs,cpu,appFrameMs,refreshMs);
+            diagnostics.frameSubmitted(applied,anchor,baseline,prediction,endNs,Math.max(endNs,estimatedPresentation),state.timestampNs,cpu,appFrameMs,refreshMs);
         }
         postInvalidateOnAnimation();
     }
 
-    private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s) {
+    private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s,PitchPredictor.Prediction prediction) {
         small.setTextSize(19);
         canvas.drawText(stabilized ? "3DoF · 水平自动回中" : "3DoF 维稳 · 关",20,25,small);
         small.setTextAlign(Paint.Align.RIGHT); small.setTextSize(15);
@@ -185,10 +196,14 @@ final class DemoView extends View {
         String status=fresh ? String.format(Locale.ROOT,"%s %.0fHz  抖动主频%s / 均频%sHz",state.status,
                 Double.isFinite(s.sampleHz)?s.sampleHz:state.hz,number(s.dominantHz),number(s.meanHz))
                 : state.ready ? "数据中断 · 未维稳" : state.status;
-        small.setTextSize(13);
+        small.setTextSize(12);
         canvas.drawText(now < noticeUntilMs ? notice : status,20,46,small);
         canvas.drawText(String.format(Locale.ROOT,"样本%sms  绘制%sms  显示≈%s±%sms",number(s.sampleAgeMs),
-                number(s.cpuDrawMs),number(s.estimatedDisplayMs),number(s.uncertaintyMs)),20,65,small);
+                number(s.cpuDrawMs),number(s.estimatedDisplayMs),number(s.uncertaintyMs)),20,59,small);
+        String forecast=!predictionEnabled?"预测关 · 普通补偿":!stabilized?"预测暂停 · 维稳已关":prediction.strength<.01
+                ?"预测开 · 正在识别稳定周期":String.format(Locale.ROOT,"预测开 · 周期%.2fHz · 强度%.0f%% · 前推%.1fms",
+                        prediction.frequencyHz,prediction.strength*100,prediction.horizonMs);
+        canvas.drawText(forecast,20,74,small);
     }
 
     private void drawTextPanel(Canvas canvas,long now) {

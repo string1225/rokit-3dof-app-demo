@@ -5,6 +5,28 @@ import static org.junit.Assert.*;
 
 public class MotionDiagnosticsTest {
     private static final long START=10_000_000_000L;
+    @Test public void predictedAndOrdinaryResidualsUseTheSameActualFuturePoseAndAnchor() {
+        MotionDiagnostics diagnostics=new MotionDiagnostics(); PitchPredictor predictor=new PitchPredictor();
+        LevelFollow follow=new LevelFollow(1.5,12);
+        for(int i=0;i<=800;i++) {
+            long t=START+i*10_000_000L;
+            Quaternion head=Quaternion.axisAngle(1,0,0,Math.toRadians(Math.sin(2*Math.PI*3*i*.01)));
+            diagnostics.onPose(head,t,t);
+            PitchPredictor.Prediction forecast=predictor.onPose(head,t).predict(head,t,20,true);
+            if(i%2==0) {
+                LevelFollow.Result base=follow.update(head,t);
+                diagnostics.frameSubmitted(base.anchor.inverse().multiply(forecast.pose),base.anchor,base.compensatedHead,
+                        forecast,t+2_000_000L,t+20_000_000L,t,1,3,16);
+            }
+        }
+        MotionDiagnostics.Snapshot result=diagnostics.snapshot(START+8_000_000_000L);
+        assertTrue(result.baselineResidualRmsDeg>.2);
+        assertTrue("Predictive and counterfactual ordinary errors must differ without fabricating a zero curve",
+                result.residualRmsDeg<result.baselineResidualRmsDeg*.25);
+        assertEquals(result.residualCurve.length,result.baselineResidualCurve.length);
+        assertTrue(result.prediction.strength>.8);
+    }
+
     @Test public void detectsKnownOscillationWithoutConfusingSampleRate() {
         MotionDiagnostics d=signal(3,1,false);
         MotionDiagnostics.Snapshot s=d.snapshot(START+5_000_000_000L);

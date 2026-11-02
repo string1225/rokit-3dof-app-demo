@@ -18,10 +18,12 @@ public final class MotionDiagnostics {
     private long cachedAt,lastFrameNs;
     private double sampleAge=Double.NaN,cpuMs=Double.NaN,appMs=Double.NaN;
     private double estimatedMs=Double.NaN,uncertaintyMs=Double.NaN,renderHz=Double.NaN;
+    private PitchPredictor.Prediction prediction=PitchPredictor.Prediction.NONE;
 
     public synchronized void reset() {
         poses.clear(); pending.clear(); pairs.clear(); frameTimes.clear(); cached=null; cachedAt=0;
         lastFrameNs=0; sampleAge=cpuMs=appMs=estimatedMs=uncertaintyMs=renderHz=Double.NaN;
+        prediction=PitchPredictor.Prediction.NONE;
     }
 
     public synchronized void onPose(Quaternion orientation,long timestampNs,long callbackNs) {
@@ -38,7 +40,9 @@ public final class MotionDiagnostics {
             double t=(double)(f.time-previous.time)/(timestampNs-previous.time);
             Quaternion actual=previous.q.interpolate(orientation,t);
             double residual=f.anchor.inverse().multiply(actual).multiply(f.applied.inverse()).pitchDegrees();
-            Record record=new Record(f.time,actual.pitchDegrees(),residual,f.applied.pitchDegrees(),f.anchor,f.age,f.cpu,f.app,f.estimate);
+            double baseline=f.anchor.inverse().multiply(actual).multiply(f.baseline.inverse()).pitchDegrees();
+            Record record=new Record(f.time,actual.pitchDegrees(),residual,baseline,f.applied.pitchDegrees(),f.anchor,
+                    f.age,f.cpu,f.app,f.estimate,f.prediction);
             pairs.addLast(record); records.addLast(record);
             while(records.size()>2048) records.removeFirst();
         }
@@ -52,6 +56,13 @@ public final class MotionDiagnostics {
 
     public synchronized void frameSubmitted(Quaternion applied,Quaternion anchor,long frameEndNs,long expectedPresentationNs,
             long sourceSampleNs,double drawCpuMs,double frameTotalMs,double refreshMs) {
+        frameSubmitted(applied,anchor,applied,PitchPredictor.Prediction.NONE,frameEndNs,expectedPresentationNs,
+                sourceSampleNs,drawCpuMs,frameTotalMs,refreshMs);
+    }
+
+    public synchronized void frameSubmitted(Quaternion applied,Quaternion anchor,Quaternion baselineApplied,
+            PitchPredictor.Prediction prediction,long frameEndNs,long expectedPresentationNs,
+            long sourceSampleNs,double drawCpuMs,double frameTotalMs,double refreshMs) {
         if(sourceSampleNs<=0 || frameEndNs<sourceSampleNs || expectedPresentationNs<frameEndNs
                 || expectedPresentationNs-frameEndNs>500_000_000L) return;
         double age=(frameEndNs-sourceSampleNs)*1e-6;
@@ -59,13 +70,14 @@ public final class MotionDiagnostics {
         sampleAge=average(sampleAge,age); cpuMs=average(cpuMs,drawCpuMs);
         appMs=average(appMs,frameTotalMs); estimatedMs=average(estimatedMs,estimate);
         uncertaintyMs=refreshMs;
+        this.prediction=prediction;
         if(frameEndNs>lastFrameNs) {
             frameTimes.addLast(frameEndNs);
             while(!frameTimes.isEmpty() && frameEndNs-frameTimes.peekFirst()>WINDOW_NS) frameTimes.removeFirst();
             if(frameTimes.size()>1) renderHz=(frameTimes.size()-1)*1e9/(frameEndNs-frameTimes.peekFirst());
         }
         lastFrameNs=frameEndNs;
-        pending.add(new Frame(applied,anchor,expectedPresentationNs,age,drawCpuMs,frameTotalMs,estimate));
+        pending.add(new Frame(applied,anchor,baselineApplied,prediction,expectedPresentationNs,age,drawCpuMs,frameTotalMs,estimate));
         while(pending.size()>180) pending.remove();
     }
 
@@ -84,14 +96,15 @@ public final class MotionDiagnostics {
             peak=spectrum[0]; mean=spectrum[1]; rms=spectrum[2];
         }
         Record[] curve=pairs.toArray(new Record[0]);
-        double[] seconds=new double[curve.length],raw=new double[curve.length],residual=new double[curve.length];
+        double[] seconds=new double[curve.length],raw=new double[curve.length],residual=new double[curve.length],baseline=new double[curve.length];
         for(int i=0;i<curve.length;i++) {
             seconds[i]=(curve[i].presentationNs-nowNs)*1e-9;
             raw[i]=curve[i].inputPitchDeg; residual[i]=curve[i].residualPitchDeg;
+            baseline[i]=curve[i].baselineResidualPitchDeg;
         }
         double residualRms=detrendedRms(seconds,residual);
         cached=new Snapshot(peak,mean,rms,residualRms,sampleHz,renderHz,sampleAge,cpuMs,appMs,
-                estimatedMs,uncertaintyMs,seconds,raw,residual);
+                estimatedMs,uncertaintyMs,seconds,raw,residual,baseline,detrendedRms(seconds,baseline),prediction);
         cachedAt=nowNs; return cached;
     }
 
@@ -151,21 +164,30 @@ public final class MotionDiagnostics {
         public final double dominantHz,meanHz,inputRmsDeg,residualRmsDeg,sampleHz,renderHz;
         public final double sampleAgeMs,cpuDrawMs,appFrameMs,estimatedDisplayMs,uncertaintyMs;
         public final double[] seconds,inputCurve,residualCurve;
+        public final double[] baselineResidualCurve;
+        public final double baselineResidualRmsDeg;
+        public final PitchPredictor.Prediction prediction;
         Snapshot(double peak,double mean,double rms,double residualRms,double sampleHz,double renderHz,
-                double age,double cpu,double app,double estimate,double uncertainty,double[] seconds,double[] input,double[] residual) {
+                double age,double cpu,double app,double estimate,double uncertainty,double[] seconds,double[] input,double[] residual,
+                double[] baseline,double baselineRms,PitchPredictor.Prediction prediction) {
             dominantHz=peak; meanHz=mean; inputRmsDeg=rms; residualRmsDeg=residualRms;
             this.sampleHz=sampleHz; this.renderHz=renderHz; sampleAgeMs=age; cpuDrawMs=cpu;
             appFrameMs=app; estimatedDisplayMs=estimate; uncertaintyMs=uncertainty;
             this.seconds=seconds; inputCurve=input; residualCurve=residual;
+            baselineResidualCurve=baseline; baselineResidualRmsDeg=baselineRms; this.prediction=prediction;
         }
     }
     public static final class Record {
         public final long presentationNs;
         public final double inputPitchDeg,residualPitchDeg,appliedPitchDeg,sampleAgeMs,cpuMs,appMs,estimatedDisplayMs;
         public final double anchorYawDeg,anchorPitchDeg;
-        Record(long time,double input,double residual,double applied,Quaternion anchor,double age,double cpu,double app,double estimate) {
+        public final double baselineResidualPitchDeg;
+        public final PitchPredictor.Prediction prediction;
+        Record(long time,double input,double residual,double baseline,double applied,Quaternion anchor,double age,double cpu,double app,double estimate,
+                PitchPredictor.Prediction prediction) {
             presentationNs=time; inputPitchDeg=input; residualPitchDeg=residual; appliedPitchDeg=applied;
             sampleAgeMs=age; cpuMs=cpu; appMs=app; estimatedDisplayMs=estimate;
+            baselineResidualPitchDeg=baseline; this.prediction=prediction;
             anchorPitchDeg=anchor.pitchDegrees(); double[] forward=anchor.rotate(new double[]{0,0,-1});
             anchorYawDeg=Math.toDegrees(Math.atan2(-forward[0],-forward[2]));
         }
@@ -175,9 +197,12 @@ public final class MotionDiagnostics {
         Pose(Quaternion q,long time) { this.q=q; this.time=time; pitch=q.pitchDegrees(); }
     }
     private static final class Frame {
-        final Quaternion applied,anchor; final long time; final double age,cpu,app,estimate;
-        Frame(Quaternion q,Quaternion anchor,long time,double age,double cpu,double app,double estimate) {
+        final Quaternion applied,anchor,baseline; final long time; final double age,cpu,app,estimate;
+        final PitchPredictor.Prediction prediction;
+        Frame(Quaternion q,Quaternion anchor,Quaternion baseline,PitchPredictor.Prediction prediction,
+                long time,double age,double cpu,double app,double estimate) {
             applied=q; this.anchor=anchor; this.time=time; this.age=age; this.cpu=cpu; this.app=app; this.estimate=estimate;
+            this.baseline=baseline; this.prediction=prediction;
         }
     }
 }

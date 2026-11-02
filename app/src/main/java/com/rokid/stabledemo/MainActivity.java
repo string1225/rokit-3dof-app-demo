@@ -46,7 +46,7 @@ public final class MainActivity extends ComponentActivity {
     private DemoView demo;
     private PowerTestView powerView;
     private LinearLayout menu;
-    private final Button[] options=new Button[2];
+    private final Button[] options=new Button[3];
     private TextView menuStatus;
     private TrackingController tracker;
     private PowerRecorder recorder;
@@ -60,6 +60,8 @@ public final class MainActivity extends ComponentActivity {
     private int selected,benchmarkGeneration;
     private float horizontalFov=30;
     private float followTau=1.5f,followSpeed=12f;
+    private boolean predictionEnabled=true;
+    private float predictionLeadMs=15;
     private long stageDurationMs=300_000;
     private final Window.OnFrameMetricsAvailableListener frameListener=(window,metrics,dropped) -> {
         if(mode==Mode.DOF && demo!=null) demo.setFrameDurationNs(metrics.getMetric(FrameMetrics.TOTAL_DURATION));
@@ -86,6 +88,9 @@ public final class MainActivity extends ComponentActivity {
         if(!Float.isFinite(followSpeed)||followSpeed<1||followSpeed>60) followSpeed=12f;
         demoAxes=AxisProfile.usesLegacyDemo(getIntent().getStringExtra("axes"));
         forceFusion=getIntent().getBooleanExtra("force_fusion",false);
+        predictionEnabled=getIntent().getBooleanExtra("prediction_enabled",true);
+        predictionLeadMs=getIntent().getFloatExtra("prediction_lead_ms",15);
+        if(!Float.isFinite(predictionLeadMs)||predictionLeadMs<5||predictionLeadMs>20) predictionLeadMs=15;
         int stageSeconds=getIntent().getIntExtra("benchmark_stage_seconds",300);
         if(stageSeconds>=5 && stageSeconds<=300) stageDurationMs=stageSeconds*1000L;
         permissions=registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(),grants -> {
@@ -111,10 +116,10 @@ public final class MainActivity extends ComponentActivity {
         float scale=Math.min(getResources().getDisplayMetrics().widthPixels/480f,getResources().getDisplayMetrics().heightPixels/640f);
         menu=new LinearLayout(this); menu.setOrientation(LinearLayout.VERTICAL); menu.setGravity(Gravity.CENTER);
         menu.addView(label("选择测试",24*scale));
-        for(int i=0;i<2;i++) {
+        for(int i=0;i<options.length;i++) {
             final int index=i;
             Button button=new Button(this); options[i]=button;
-            button.setText(i==0?"3DoF 测试":"续航测试 · 25分钟");
+            button.setText(i==0?"3DoF 测试":i==1?"续航测试 · 25分钟":"预测补偿 · "+(predictionEnabled?"开":"关"));
             if(i==1 && stageDurationMs!=300_000) button.setText("续航缩时验收 · 每项"+(stageDurationMs/1000)+"秒");
             button.setTextColor(Color.GREEN); button.setAllCaps(false); button.setPadding(0,0,0,0);
             button.setTextSize(TypedValue.COMPLEX_UNIT_PX,22*scale); button.setDefaultFocusHighlightEnabled(false);
@@ -174,16 +179,26 @@ public final class MainActivity extends ComponentActivity {
         getWindow().removeOnFrameMetricsAvailableListener(frameListener); super.onDestroy();
     }
 
-    private void enterSelected() { if(selected==0) beginDof(); else requestPower(); }
+    private void enterSelected() {
+        if(selected==0) beginDof();
+        else if(selected==1) requestPower();
+        else {
+            predictionEnabled=!predictionEnabled; options[2].setText("预测补偿 · "+(predictionEnabled?"开":"关"));
+            menuStatus.setText("预测已"+(predictionEnabled?"开启":"关闭")+" · 选择3DoF开始对比");
+        }
+    }
     private void beginDof() {
         if(!resumed) return;
         stopDof("restart"); mode=Mode.DOF; menu.setVisibility(View.GONE); powerView.setVisibility(View.GONE); demo.setVisibility(View.VISIBLE);
         MotionDiagnostics diagnostics=new MotionDiagnostics();
+        demo.setPredictionOptions(predictionEnabled,predictionLeadMs);
         loggingError="";
         try {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
             recorder.metadata("axes",demoAxes?"demo":"android"); recorder.metadata("horizontal_fov_deg",horizontalFov);
             recorder.metadata("follow_tau_seconds",followTau); recorder.metadata("follow_speed_deg_s",followSpeed);
+            recorder.metadata("prediction_enabled",predictionEnabled); recorder.metadata("prediction_display_lead_ms",predictionLeadMs);
+            recorder.metadata("prediction_policy","Project-owned periodic pitch model, 1..8Hz and at least 3 cycles. Sample age plus display lead capped at 20ms, stale age >25ms rejected, added pitch capped at 0.75 degrees. Model confidence gates prediction; no optical latency calibration.");
             recorder.metadata("content_top_screen_px",80+DemoView.CONTENT_TOP);
             recorder.metadata("content_bottom_screen_px",80+DemoView.CONTENT_BOTTOM);
             recorder.metadata("content_center_screen_y_px",80+(DemoView.CONTENT_TOP+DemoView.CONTENT_BOTTOM)/2);
@@ -198,7 +213,7 @@ public final class MainActivity extends ComponentActivity {
             if(motionLog!=null && !motionLog.error().isEmpty()) return motionLog.error();
             return recorder!=null?recorder.displayStatus():"耗电记录不可用";
         });
-        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics);
+        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics,predictionEnabled);
         tracker.start(); demo.begin(tracker,diagnostics); demo.requestFocus();
     }
     private void stopDof(String reason) {
@@ -238,7 +253,7 @@ public final class MainActivity extends ComponentActivity {
     }
     private void click() {
         long now=SystemClock.elapsedRealtime(); if(now-lastClickMs<140) return; lastClickMs=now;
-        if(mode==Mode.MENU) { selected=(selected+1)%2; highlightSelection(); }
+        if(mode==Mode.MENU) { selected=(selected+1)%options.length; highlightSelection(); }
         else if(mode==Mode.DOF) { if(demo.unavailable()) beginDof(); else { demo.toggle(); if(recorder!=null) recorder.note("stabilization",demo.isStabilized()?"enabled":"disabled"); } }
     }
     private void doubleClick() { routeBack(false); }
@@ -265,7 +280,9 @@ public final class MainActivity extends ComponentActivity {
         }
         if(key==KeyEvent.KEYCODE_PROG_BLUE) { if(event.getRepeatCount()==0) longPress(); return true; }
         if(key==KeyEvent.KEYCODE_BACK) return true;
-        if(mode==Mode.MENU&&(key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) { selected=1-selected; highlightSelection(); return true; }
+        if(mode==Mode.MENU&&(key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) {
+            selected=(selected+(key==KeyEvent.KEYCODE_DPAD_UP?options.length-1:1))%options.length; highlightSelection(); return true;
+        }
         return super.onKeyDown(key,event);
     }
     @SuppressLint("GestureBackNavigation")
