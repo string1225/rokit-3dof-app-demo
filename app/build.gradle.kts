@@ -8,8 +8,8 @@ android {
         applicationId = "com.rokid.stabledemo"
         minSdk = 31
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.5.0"
+        versionCode = 9
+        versionName = "0.5.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         externalNativeBuild { cmake { arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON" } }

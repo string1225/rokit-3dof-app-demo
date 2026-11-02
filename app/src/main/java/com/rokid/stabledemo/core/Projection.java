@@ -25,9 +25,16 @@ public final class Projection {
 
     /** Center displacement exceeds 50% of content width OR height; a hidden rear plane also qualifies. */
     public boolean centerOutsideViewport(Quaternion relativeHead) {
+        return centerOffsetExceeds(relativeHead,.5);
+    }
+
+    /** Compare each screen axis with a fraction of the full content width/height. */
+    public boolean centerOffsetExceeds(Quaternion relativeHead,double contentFraction) {
+        if(!Double.isFinite(contentFraction)||contentFraction<0||contentFraction>.5)
+            throw new IllegalArgumentException("Invalid content offset fraction");
         double[] center=point(cx,cy,relativeHead);
         // Ignore only rounding at the exact boundary, not a meaningful pixel displacement.
-        return center==null || Math.abs(center[0]-cx)>cx+1e-7
-                ||center[1]<contentTop-1e-7||center[1]>contentBottom+1e-7;
+        return center==null || Math.abs(center[0]-cx)>2*cx*contentFraction+1e-7
+                ||Math.abs(center[1]-cy)>(contentBottom-contentTop)*contentFraction+1e-7;
     }
 }

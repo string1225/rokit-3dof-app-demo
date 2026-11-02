@@ -4,6 +4,7 @@ package com.rokid.stabledemo.core;
 public final class LevelFollow {
     public static final double DEFAULT_TAU_SECONDS=1.5;
     public static final double DEFAULT_SPEED_DEG_S=12;
+    public static final double FOLLOW_START_FRACTION=.2;
     private final double tauSeconds,maxSpeedRad;
     private double yaw,pitch;
     private long lastNs;
@@ -26,10 +27,12 @@ public final class LevelFollow {
 
     /** A disabled follower keeps its anchor, including when the plane leaves the viewport. */
     public Result update(Quaternion head,long nowNs,Projection viewport,boolean enabled) {
-        boolean snapped=enabled && viewport!=null && viewport.centerOutsideViewport(anchor().inverse().multiply(head));
+        Quaternion compensated=anchor().inverse().multiply(head);
+        boolean snapped=enabled && viewport!=null && viewport.centerOutsideViewport(compensated);
         if(snapped) recenter(head,nowNs);
+        boolean shouldFollow=enabled && (viewport==null || viewport.centerOffsetExceeds(compensated,FOLLOW_START_FRACTION));
         double[] target=direction(head);
-        if(enabled && lastNs>0 && nowNs>lastNs) {
+        if(shouldFollow && lastNs>0 && nowNs>lastNs) {
             double elapsed=(nowNs-lastNs)*1e-9;
             // Do not turn a render stall or background gap into an immediate anchor jump.
             if(elapsed<=.25) {

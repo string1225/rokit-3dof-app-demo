@@ -194,7 +194,7 @@ public final class MainActivity extends ComponentActivity {
             followEnabled=!followEnabled;
             getPreferences(MODE_PRIVATE).edit().putBoolean("follow_enabled",followEnabled).apply();
             options[3].setText("浮窗跟随 · "+(followEnabled?"开":"关"));
-            menuStatus.setText(followEnabled?"慢跟随和越界回中已开启":"锚点固定 · 仅长按回中 · 选择3DoF开始");
+            menuStatus.setText(followEnabled?"偏移超20%才跟随 · 超50%立即回中":"锚点固定 · 仅长按回中 · 选择3DoF开始");
         } else {
             imuRecordingEnabled=!imuRecordingEnabled;
             options[4].setText("IMU 录制 · "+(imuRecordingEnabled?"开":"关"));
@@ -212,6 +212,7 @@ public final class MainActivity extends ComponentActivity {
             recorder.metadata("axes",demoAxes?"demo":"android"); recorder.metadata("horizontal_fov_deg",horizontalFov);
             recorder.metadata("follow_tau_seconds",followTau); recorder.metadata("follow_speed_deg_s",followSpeed);
             recorder.metadata("follow_enabled",followEnabled); recorder.metadata("imu_recording_enabled",imuRecordingEnabled);
+            recorder.metadata("follow_start_content_fraction",com.rokid.stabledemo.core.LevelFollow.FOLLOW_START_FRACTION);
             recorder.metadata("prediction_enabled",predictionEnabled); recorder.metadata("prediction_display_lead_ms",predictionLeadMs);
             recorder.metadata("prediction_policy","Project-owned periodic pitch model, 1..8Hz and at least 3 cycles. Sample age plus display lead capped at 20ms, stale age >25ms rejected, added pitch capped at 0.75 degrees. Model confidence gates prediction; no optical latency calibration.");
             recorder.metadata("content_top_screen_px",80+DemoView.CONTENT_TOP);
@@ -219,7 +220,7 @@ public final class MainActivity extends ComponentActivity {
             recorder.metadata("content_center_screen_y_px",80+(DemoView.CONTENT_TOP+DemoView.CONTENT_BOTTOM)/2);
             recorder.metadata("auto_recenter_policy",followEnabled?"Before slow follow, snap yaw/pitch to the content center when the projected panel center exits the central black content region (screen X 0..480, Y 160..392): X offset >240 pixels OR Y offset >116 pixels. Parameter bars are excluded. Roll compensation is preserved.":"Disabled: no slow follow or viewport recentering; anchor changes only on manual recenter or tracking reference initialization/reset.");
             recorder.metadata("level_reference","Gravity-aligned from the fused pose (Android/Fusion ENU world +Z up); startup head tilt is retained for compensation. Optical/IMU mounting alignment is not calibrated.");
-            recorder.metadata("follow_policy",followEnabled?"Within viewport bounds, yaw/pitch anchor follows slowly; crossing the limit immediately recenters yaw/pitch. Roll stays compensated relative to the gravity-aligned level reference. Head compensation uses the latest pose without this slow filter.":"Fixed yaw/pitch anchor even outside viewport or when toggling stabilization. Manual recenter retains roll compensation. Background resume or a sensor reference reset initializes a new anchor.");
+            recorder.metadata("follow_policy",followEnabled?"Hold the anchor while projected center offsets are within 20% of content width AND height; start slow yaw/pitch follow when either axis exceeds 20%, stop again on re-entry. Exceeding 50% still immediately recenters yaw/pitch. Limits use measured pose before prediction. Roll stays compensated relative to gravity.":"Fixed yaw/pitch anchor even outside viewport or when toggling stabilization. Manual recenter retains roll compensation. Background resume or a sensor reference reset initializes a new anchor.");
             recorder.metadata("motion_residual","Retrospective IMU alignment relative to each submitted frame's moving level anchor; intentional follow is excluded. Software model only, not optical measurement.");
             recorder.startStage("3dof","3DoF维稳与诊断"); motionLog=new MotionLog(recorder.directory(),diagnostics);
         } catch(IOException e) { loggingError="耗电/诊断文件创建失败"; if(recorder!=null) recorder.note("motion_log_error",String.valueOf(e)); }

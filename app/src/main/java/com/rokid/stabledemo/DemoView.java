@@ -191,7 +191,7 @@ final class DemoView extends View {
 
     private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s,PitchPredictor.Prediction prediction) {
         small.setTextSize(19);
-        canvas.drawText(stabilized ? (followEnabled?"3DoF · 跟随开":"3DoF · 跟随关 · 固定锚点") : "3DoF 维稳 · 关",20,25,small);
+        canvas.drawText(stabilized ? (followEnabled?"3DoF · 跟随开 · 超20%追随":"3DoF · 跟随关 · 固定锚点") : "3DoF 维稳 · 关",20,25,small);
         small.setTextAlign(Paint.Align.RIGHT); small.setTextSize(15);
         canvas.drawText("循环 "+frame.round,460,25,small);
         small.setTextAlign(Paint.Align.LEFT);
