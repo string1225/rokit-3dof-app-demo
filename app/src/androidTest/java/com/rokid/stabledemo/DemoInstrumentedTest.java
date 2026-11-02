@@ -25,6 +25,60 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class DemoInstrumentedTest {
+    @Test public void sevenLinePanelIsCenteredAndFitsBetweenTheParameterBars() throws Exception {
+        java.lang.reflect.Field panelField=DemoView.class.getDeclaredField("panel");
+        java.lang.reflect.Field layoutField=DemoView.class.getDeclaredField("textLayout");
+        panelField.setAccessible(true); layoutField.setAccessible(true);
+        onMain(() -> {
+            DemoView view=new DemoView(InstrumentationRegistry.getInstrumentation().getTargetContext(),
+                    30,1.5,12,() -> {},() -> {},() -> {});
+            try {
+                android.graphics.RectF panel=(android.graphics.RectF)panelField.get(view);
+                android.text.StaticLayout layout=(android.text.StaticLayout)layoutField.get(view);
+                assertEquals("Recenter belongs in the black content area, not the entire safe screen",196,panel.centerY(),.01);
+                assertEquals("Text must occupy exactly seven lines without wrapping",7,layout.getLineCount());
+                assertTrue("Panel must fit between the upper status and lower diagnostic chart",panel.top>=80 && panel.bottom<=312);
+                assertTrue("All seven lines must fit within the frame padding",panel.height()>=layout.getHeight()+22);
+            } catch(IllegalAccessException e) { throw new AssertionError(e); }
+        });
+    }
+
+    @Test public void verticalSnapUsesOnlyTheBlackContentArea() throws Exception {
+        java.lang.reflect.Method publish=TrackingController.class.getDeclaredMethod(
+                "publish",Quaternion.class,long.class,boolean.class);
+        publish.setAccessible(true);
+        onMain(() -> {
+            android.content.Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+            for(double degrees:new double[]{-8,8,-6,6}) {
+                TrackingController tracker=new TrackingController(context,false,false);
+                DemoView view=new DemoView(context,30,1.5,12,() -> {},() -> {},() -> {});
+                Bitmap bitmap=Bitmap.createBitmap(480,640,Bitmap.Config.ARGB_8888);
+                Canvas canvas=new Canvas(bitmap);
+                Quaternion upright=Quaternion.axisAngle(1,0,0,Math.PI/2);
+                try {
+                    view.layout(0,0,480,640); view.begin(tracker,new MotionDiagnostics());
+                    publish.invoke(tracker,upright,SystemClock.elapsedRealtimeNanos(),false);
+                    view.draw(canvas); bitmap.eraseColor(Color.BLACK);
+                    publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(1,0,0,Math.toRadians(degrees))),
+                            SystemClock.elapsedRealtimeNanos(),false);
+                    view.draw(canvas);
+                    if(Math.abs(degrees)>7) {
+                        assertTrue("An 8 degree pitch already exceeds half the black content area and must snap",
+                                Color.green(bitmap.getPixel(30,276))>128);
+                    } else {
+                        for(int x=0;x<480;x++) {
+                            assertEquals("The floating panel must not enter the upper parameter region",0,
+                                    Color.green(bitmap.getPixel(x,158)));
+                            assertEquals("The floating panel must not enter the lower parameter region",0,
+                                    Color.green(bitmap.getPixel(x,394)));
+                        }
+                    }
+                } catch(ReflectiveOperationException e) { throw new AssertionError(e); }
+                finally { view.end(); bitmap.recycle(); }
+            }
+        });
+    }
+
     @Test public void offscreenPanelReappearsAtCenterOnTheSameFrame() throws Exception {
         java.lang.reflect.Method publish=TrackingController.class.getDeclaredMethod(
                 "publish",Quaternion.class,long.class,boolean.class);

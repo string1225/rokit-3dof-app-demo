@@ -24,7 +24,8 @@ import java.util.function.Supplier;
 
 /** Hardware Canvas uses a projective homography for the entire pre-laid-out text plane. */
 final class DemoView extends View {
-    static final String DEMO_TEXT = "让文字停在眼前的方向。\n轻轻转头，观察画面是否稳定。\n向左、向右，再抬头、低头。\n最后歪一歪头，检查横滚补偿。\n同一段文字会持续循环播放。";
+    static final int CONTENT_TOP=80,CONTENT_BOTTOM=312;
+    static final String DEMO_TEXT = "让文字停在眼前的方向。\n轻轻转头，观察画面是否稳定。\n向左、向右，再抬头、低头。\n最后歪一歪头，检查横滚补偿。\n范围内缓慢跟随，越界立即回中。\n画面回到内容区中央并保持水平。\n同一段文字会持续循环播放。";
     private final Paint line=new Paint(Paint.ANTI_ALIAS_FLAG);
     private final TextPaint text=new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final Paint small=new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -32,8 +33,8 @@ final class DemoView extends View {
     private final Playback playback=new Playback(DEMO_TEXT,90,2400);
     private final Projection projection;
     private final Matrix homography=new Matrix();
-    private final RectF panel=new RectF(30,170,450,310);
-    private final float[] source={30,170,450,170,450,310,30,310};
+    private final RectF panel;
+    private final float[] source;
     private final float[] destination=new float[8];
     private final GestureDetector gestures;
     private final Runnable clickAction;
@@ -64,7 +65,10 @@ final class DemoView extends View {
         textLayout=StaticLayout.Builder.obtain(DEMO_TEXT,0,DEMO_TEXT.length(),text,376)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false)
                 .setLineSpacing(5,1).build();
-        projection=new Projection(480,480,horizontalFov);
+        float centerY=(CONTENT_TOP+CONTENT_BOTTOM)/2f,panelHeight=textLayout.getHeight()+22;
+        panel=new RectF(30,centerY-panelHeight/2,450,centerY+panelHeight/2);
+        source=new float[]{panel.left,panel.top,panel.right,panel.top,panel.right,panel.bottom,panel.left,panel.bottom};
+        projection=new Projection(480,480,horizontalFov,CONTENT_TOP,CONTENT_BOTTOM);
         gestures=new GestureDetector(context,new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onSingleTapConfirmed(MotionEvent e) { performClick(); return true; }
@@ -143,7 +147,8 @@ final class DemoView extends View {
                 destination[2*i]=(float)projected[0]; destination[2*i+1]=(float)projected[1];
             }
             if (visible && homography.setPolyToPoly(source,0,destination,0,4)) {
-                canvas.save(); canvas.concat(homography); drawTextPanel(canvas,now); canvas.restore();
+                canvas.save(); canvas.clipRect(0,CONTENT_TOP,480,CONTENT_BOTTOM);
+                canvas.concat(homography); drawTextPanel(canvas,now); canvas.restore();
             }
         } else {
             small.setTextAlign(Paint.Align.CENTER);
@@ -188,7 +193,7 @@ final class DemoView extends View {
 
     private void drawTextPanel(Canvas canvas,long now) {
         canvas.drawRoundRect(panel,8,8,line);
-        canvas.save(); canvas.translate(52,181);
+        canvas.save(); canvas.translate(panel.left+22,panel.top+11);
         int visibleEnd=frame.text.length();
         for (int i=0;i<textLayout.getLineCount();i++) {
             int start=textLayout.getLineStart(i), end=Math.min(textLayout.getLineEnd(i),visibleEnd);

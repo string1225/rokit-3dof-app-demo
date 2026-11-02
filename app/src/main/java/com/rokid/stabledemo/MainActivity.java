@@ -184,7 +184,10 @@ public final class MainActivity extends ComponentActivity {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
             recorder.metadata("axes",demoAxes?"demo":"android"); recorder.metadata("horizontal_fov_deg",horizontalFov);
             recorder.metadata("follow_tau_seconds",followTau); recorder.metadata("follow_speed_deg_s",followSpeed);
-            recorder.metadata("auto_recenter_policy","Before slow follow, snap yaw/pitch to the current view when the projected panel center exceeds half of the 480x480 safe viewport width OR height (240 pixels on either axis), or is behind the view. Roll compensation is preserved.");
+            recorder.metadata("content_top_screen_px",80+DemoView.CONTENT_TOP);
+            recorder.metadata("content_bottom_screen_px",80+DemoView.CONTENT_BOTTOM);
+            recorder.metadata("content_center_screen_y_px",80+(DemoView.CONTENT_TOP+DemoView.CONTENT_BOTTOM)/2);
+            recorder.metadata("auto_recenter_policy","Before slow follow, snap yaw/pitch to the content center when the projected panel center exits the central black content region (screen X 0..480, Y 160..392): X offset >240 pixels OR Y offset >116 pixels. Parameter bars are excluded. Roll compensation is preserved.");
             recorder.metadata("level_reference","Gravity-aligned from the fused pose (Android/Fusion ENU world +Z up); startup head tilt is retained for compensation. Optical/IMU mounting alignment is not calibrated.");
             recorder.metadata("follow_policy","Within viewport bounds, yaw/pitch anchor follows slowly; crossing the limit immediately recenters yaw/pitch. Roll stays compensated relative to the gravity-aligned level reference. Head compensation uses the latest pose without this slow filter.");
             recorder.metadata("motion_residual","Retrospective IMU alignment relative to each submitted frame's moving level anchor; intentional follow is excluded. Software model only, not optical measurement.");
