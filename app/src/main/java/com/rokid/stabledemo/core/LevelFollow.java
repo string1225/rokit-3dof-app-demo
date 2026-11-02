@@ -21,10 +21,15 @@ public final class LevelFollow {
 
     /** Check the screen-space limit before slow following can conceal a just-crossed boundary. */
     public Result update(Quaternion head,long nowNs,Projection viewport) {
-        boolean snapped=viewport!=null && viewport.centerOutsideViewport(anchor().inverse().multiply(head));
+        return update(head,nowNs,viewport,true);
+    }
+
+    /** A disabled follower keeps its anchor, including when the plane leaves the viewport. */
+    public Result update(Quaternion head,long nowNs,Projection viewport,boolean enabled) {
+        boolean snapped=enabled && viewport!=null && viewport.centerOutsideViewport(anchor().inverse().multiply(head));
         if(snapped) recenter(head,nowNs);
         double[] target=direction(head);
-        if(lastNs>0 && nowNs>lastNs) {
+        if(enabled && lastNs>0 && nowNs>lastNs) {
             double elapsed=(nowNs-lastNs)*1e-9;
             // Do not turn a render stall or background gap into an immediate anchor jump.
             if(elapsed<=.25) {

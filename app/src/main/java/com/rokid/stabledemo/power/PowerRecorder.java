@@ -241,6 +241,9 @@ public final class PowerRecorder {
         put(metadata, "schema_version", 1);
         put(metadata, "mode", mode);
         put(metadata, "started_utc_ms", startedUtc);
+        put(metadata, "started_elapsed_ms", startedElapsed);
+        try { put(metadata,"app_version",context.getPackageManager().getPackageInfo(context.getPackageName(),0).versionName); }
+        catch(android.content.pm.PackageManager.NameNotFoundException ignored) { }
         put(metadata, "sample_interval_ms", SAMPLE_MS);
         put(metadata, "manufacturer", Build.MANUFACTURER);
         put(metadata, "model", Build.MODEL);
@@ -368,8 +371,8 @@ public final class PowerRecorder {
         try {
             exportStatus = "exporting";
             for (String name : new String[]{"samples.csv", "metadata.json", "stages.jsonl"}) exportFile(name);
-            // Caller completes MotionLog's final flush/close before finish(), so copy exact bytes.
-            for (String name : new String[]{"motion_frames.csv", "motion_metrics.csv"}) {
+            // Caller drains and closes both motion and opt-in IMU writers before finish().
+            for (String name : new String[]{"motion_frames.csv", "motion_metrics.csv", "imu_raw.csv", "imu_poses.csv", "imu_metadata.json"}) {
                 if (new File(directory, name).isFile()) exportFile(name);
             }
             exportStatus = "Downloads/RokidTests/" + directory.getName();

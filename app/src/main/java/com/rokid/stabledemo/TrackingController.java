@@ -44,6 +44,7 @@ final class TrackingController implements SensorEventListener {
     private final MotionDiagnostics diagnostics;
     private final PitchPredictor predictor=new PitchPredictor();
     private final boolean trainPrediction;
+    private final ImuLog imuLog;
     private volatile Snapshot snapshot = new Snapshot(Quaternion.IDENTITY, 0, false, "等待 IMU", 0);
     private HandlerThread thread;
     private Handler handler;
@@ -65,10 +66,14 @@ final class TrackingController implements SensorEventListener {
         this(context,demoAxes,forceFusion,diagnostics,true);
     }
     TrackingController(Context context,boolean demoAxes,boolean forceFusion,MotionDiagnostics diagnostics,boolean trainPrediction) {
+        this(context,demoAxes,forceFusion,diagnostics,trainPrediction,null);
+    }
+    TrackingController(Context context,boolean demoAxes,boolean forceFusion,MotionDiagnostics diagnostics,boolean trainPrediction,ImuLog imuLog) {
         manager=(SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         this.demoAxes=demoAxes; this.forceFusion=forceFusion;
         this.diagnostics=diagnostics;
         this.trainPrediction=trainPrediction;
+        this.imuLog=imuLog;
     }
     Snapshot latest() { return snapshot; }
 
@@ -189,11 +194,13 @@ final class TrackingController implements SensorEventListener {
         }
         lastPoseNs=timestampNs;
         if (initializing) {
+            if(imuLog!=null) imuLog.pose(absolute,null,timestampNs,sourceType,referenceEpoch,true);
             reference=null; predictor.reset();
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
             if (reference == null) { reference=new LevelReference(absolute,demoAxes); referenceEpoch++; predictor.reset(); if(diagnostics!=null) diagnostics.reset(); }
             Quaternion relative=reference.relative(absolute);
+            if(imuLog!=null) imuLog.pose(absolute,relative,timestampNs,sourceType,referenceEpoch,false);
             if(diagnostics!=null) diagnostics.onPose(relative,timestampNs,SystemClock.elapsedRealtimeNanos());
             snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch,
                     trainPrediction?predictor.onPose(relative,timestampNs):PitchPredictor.State.EMPTY);

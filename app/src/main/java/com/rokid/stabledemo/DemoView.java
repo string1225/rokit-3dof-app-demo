@@ -26,7 +26,7 @@ import java.util.function.Supplier;
 /** Hardware Canvas uses a projective homography for the entire pre-laid-out text plane. */
 final class DemoView extends View {
     static final int CONTENT_TOP=80,CONTENT_BOTTOM=312;
-    static final String DEMO_TEXT = "让文字停在眼前的方向。\n轻轻转头，观察画面是否稳定。\n向左、向右，再抬头、低头。\n最后歪一歪头，检查横滚补偿。\n范围内缓慢跟随，越界立即回中。\n画面回到内容区中央并保持水平。\n同一段文字会持续循环播放。";
+    static final String DEMO_TEXT = "让文字停在眼前的方向。\n轻轻转头，观察画面是否稳定。\n向左、向右，再抬头、低头。\n最后歪一歪头，检查横滚补偿。\n跟随关闭后，浮窗锚点保持固定。\n长按手动回中，继续保持水平。\n同一段文字会持续循环播放。";
     private final Paint line=new Paint(Paint.ANTI_ALIAS_FLAG);
     private final TextPaint text=new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final Paint small=new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -47,6 +47,7 @@ final class DemoView extends View {
     private double appFrameMs;
     private boolean running, stabilized=true, foreground;
     private boolean predictionEnabled=true;
+    private boolean followEnabled=true;
     private double predictionLeadMs=15;
     private long startMs=-1, noticeUntilMs;
     private long referenceEpoch=Long.MIN_VALUE;
@@ -87,10 +88,11 @@ final class DemoView extends View {
         frame=playback.at(0); invalidate();
     }
     void setPowerStatus(Supplier<String> status) { powerStatus=status; }
+    void setFollowEnabled(boolean enabled) { followEnabled=enabled; }
     void setPredictionOptions(boolean enabled,double leadMs) {
         predictionEnabled=enabled;
         predictionLeadMs=Double.isFinite(leadMs)?Math.max(5,Math.min(20,leadMs)):15;
-        setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
+        setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；跟随"+(followEnabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
     }
     void setFrameDurationNs(long duration) {
         if(duration>0 && duration<500_000_000L) appFrameMs=appFrameMs==0?duration*1e-6:appFrameMs*.9+duration*1e-7;
@@ -100,7 +102,7 @@ final class DemoView extends View {
     void toggle() {
         stabilized=!stabilized;
         TrackingController.Snapshot state=tracker==null?null:tracker.latest();
-        if(stabilized && state!=null && state.ready) {
+        if(followEnabled && stabilized && state!=null && state.ready) {
             follower.recenter(state.relative,SystemClock.elapsedRealtimeNanos()); referenceEpoch=state.referenceEpoch;
         }
         invalidate();
@@ -143,11 +145,11 @@ final class DemoView extends View {
                 follower.recenter(state.relative,drawStartNs); referenceEpoch=state.referenceEpoch;
             }
             if(stabilized) {
-                LevelFollow.Result result=follower.update(state.relative,drawStartNs,projection);
+                LevelFollow.Result result=follower.update(state.relative,drawStartNs,projection,followEnabled);
                 baseline=result.compensatedHead; anchor=result.anchor;
                 applied=anchor.inverse().multiply(prediction.pose);
                 if(result.snapped) { notice="超界 · 已水平回中"; noticeUntilMs=now+1200; }
-            } else follower.recenter(state.relative,drawStartNs);
+            } else if(followEnabled) follower.recenter(state.relative,drawStartNs);
             Quaternion head=applied;
             boolean visible=true;
             for (int i=0;i<4;i++) {
@@ -189,7 +191,7 @@ final class DemoView extends View {
 
     private void drawStatus(Canvas canvas,TrackingController.Snapshot state,boolean fresh,long now,MotionDiagnostics.Snapshot s,PitchPredictor.Prediction prediction) {
         small.setTextSize(19);
-        canvas.drawText(stabilized ? "3DoF · 水平自动回中" : "3DoF 维稳 · 关",20,25,small);
+        canvas.drawText(stabilized ? (followEnabled?"3DoF · 跟随开":"3DoF · 跟随关 · 固定锚点") : "3DoF 维稳 · 关",20,25,small);
         small.setTextAlign(Paint.Align.RIGHT); small.setTextSize(15);
         canvas.drawText("循环 "+frame.round,460,25,small);
         small.setTextAlign(Paint.Align.LEFT);

@@ -25,6 +25,38 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class DemoInstrumentedTest {
+    @Test public void fixedAnchorSurvivesOffscreenMotionAndStabilizationTogglesUntilManualRecenter() throws Exception {
+        java.lang.reflect.Method publish=TrackingController.class.getDeclaredMethod("publish",Quaternion.class,long.class,boolean.class);
+        java.lang.reflect.Method anchorMethod=LevelFollow.class.getDeclaredMethod("anchor");
+        java.lang.reflect.Field followerField=DemoView.class.getDeclaredField("follower");
+        publish.setAccessible(true); anchorMethod.setAccessible(true); followerField.setAccessible(true);
+        onMain(() -> {
+            android.content.Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+            TrackingController tracker=new TrackingController(context,false,false);
+            DemoView view=new DemoView(context,30,1.5,12,() -> {},() -> {},() -> {});
+            Bitmap bitmap=Bitmap.createBitmap(480,640,Bitmap.Config.ARGB_8888); Canvas canvas=new Canvas(bitmap);
+            Quaternion upright=Quaternion.axisAngle(1,0,0,Math.PI/2);
+            try {
+                view.setFollowEnabled(false); view.layout(0,0,480,640); view.begin(tracker,new MotionDiagnostics());
+                publish.invoke(tracker,upright,SystemClock.elapsedRealtimeNanos(),false); view.draw(canvas);
+                LevelFollow follower=(LevelFollow)followerField.get(view);
+                Quaternion original=(Quaternion)anchorMethod.invoke(follower);
+                publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(0,1,0,.5)),SystemClock.elapsedRealtimeNanos(),false);
+                view.draw(canvas);
+                view.toggle();
+                publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(0,1,0,.8)),SystemClock.elapsedRealtimeNanos(),false);
+                view.draw(canvas); view.toggle(); view.draw(canvas);
+                Quaternion unchanged=(Quaternion)anchorMethod.invoke(follower);
+                assertEquals(original.x,unchanged.x,1e-9); assertEquals(original.y,unchanged.y,1e-9);
+                assertEquals(original.z,unchanged.z,1e-9); assertEquals(original.w,unchanged.w,1e-9);
+                view.centered();
+                Quaternion recentered=(Quaternion)anchorMethod.invoke(follower);
+                assertTrue("Manual recenter must be the operation that moves the frozen anchor",Math.abs(recentered.y-original.y)>.1);
+            } catch(ReflectiveOperationException e) { throw new AssertionError(e); }
+            finally { view.end(); bitmap.recycle(); }
+        });
+    }
+
     @Test public void trackedPeriodicPoseReachesRenderingAndReferenceChangesClearIt() throws Exception {
         android.content.Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         MotionDiagnostics diagnostics=new MotionDiagnostics();
@@ -225,7 +257,7 @@ public class DemoInstrumentedTest {
                 current.set(a);
                 Button button=findButton(a.findViewById(android.R.id.content));
                 assertNotNull(button); assertEquals("3DoF 测试",button.getText().toString());
-                assertEquals(3,countButtons(a.findViewById(android.R.id.content)));
+                assertEquals(5,countButtons(a.findViewById(android.R.id.content)));
                 assertFalse(a.demoView().isRunning()); button.performClick();
                 assertTrue(a.demoView().isRunning()); assertFalse(button.isShown());
             });
