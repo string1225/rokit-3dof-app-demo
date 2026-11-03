@@ -183,13 +183,21 @@ public final class PitchPredictor {
         public final int stableFits,gyroRequestedMs;
         public final double gyroHorizonMs,gyroCorrectionDeg;
         public final String periodicStatus,gyroStatus;
+        public final GyroPredictor.Result gyro;
         private Prediction(Quaternion pose,boolean enabled,double horizon,double hz,double strength,double correction,
                 double periodicHorizon,double periodicCorrection,double quality,double cycles,int fits,String periodicStatus,
                 int gyroRequested,double gyroHorizon,double gyroCorrection,String gyroStatus) {
+            this(pose,enabled,horizon,hz,strength,correction,periodicHorizon,periodicCorrection,quality,cycles,fits,
+                    periodicStatus,gyroRequested,gyroHorizon,gyroCorrection,gyroStatus,GyroPredictor.Result.EMPTY);
+        }
+        private Prediction(Quaternion pose,boolean enabled,double horizon,double hz,double strength,double correction,
+                double periodicHorizon,double periodicCorrection,double quality,double cycles,int fits,String periodicStatus,
+                int gyroRequested,double gyroHorizon,double gyroCorrection,String gyroStatus,GyroPredictor.Result gyro) {
             this.pose=pose; this.enabled=enabled; horizonMs=horizon; frequencyHz=hz; this.strength=strength; correctionDeg=correction;
             periodicHorizonMs=periodicHorizon; periodicCorrectionDeg=periodicCorrection; fitQuality=quality; fitCycles=cycles;
             stableFits=fits; this.periodicStatus=periodicStatus; gyroRequestedMs=gyroRequested;
             gyroHorizonMs=gyroHorizon; gyroCorrectionDeg=gyroCorrection; this.gyroStatus=gyroStatus;
+            this.gyro=gyro;
         }
         public static Prediction unavailable(Quaternion measured,boolean enabled) {
             return new Prediction(measured,enabled,0,Double.NaN,0,0,0,0,Double.NaN,Double.NaN,0,
@@ -202,9 +210,16 @@ public final class PitchPredictor {
                 periodic=strength>0?clamp(periodicCorrectionDeg/strength,-.75,.75)*strength:0;
                 contribution=gyro.correctionDeg*(1-strength);
             }
-            double correction=clamp(periodic+contribution,-.75,.75);
+            double cap=gyro.horizonMs>0?gyro.maxCorrectionDeg:.75;
+            double correction=clamp(periodic+contribution,-cap,cap);
             Quaternion predicted=measured;
-            if(correction!=0) {
+            if(gyro.fullAxes && gyro.horizonMs>0) {
+                // Preserve gyro yaw/roll. The optional periodic model only replaces its share of pitch.
+                predicted=pitchIncrement(gyro.pose,periodic-gyro.correctionDeg*strength);
+                double angle=Math.toDegrees(2*Math.acos(Math.min(1,Math.abs(measured.inverse().multiply(predicted).w))));
+                if(angle>cap) { predicted=measured.interpolate(predicted,cap/angle); periodic*=cap/angle; }
+                correction=predicted.pitchDegrees()-measured.pitchDegrees(); contribution=correction-periodic;
+            } else if(correction!=0) {
                 double[] forward=measured.rotate(new double[]{0,0,-1});
                 double horizontal=Math.hypot(forward[0],forward[2]);
                 predicted=Quaternion.axisAngle(-forward[2]/horizontal,0,forward[0]/horizontal,
@@ -212,7 +227,13 @@ public final class PitchPredictor {
             }
             return new Prediction(predicted,enabled,Math.max(periodicHorizonMs,gyro.horizonMs),frequencyHz,strength,correction,
                     periodicHorizonMs,periodic,fitQuality,fitCycles,stableFits,periodicStatus,
-                    gyro.requestedMs,gyro.horizonMs,contribution,gyro.status);
+                    gyro.requestedMs,gyro.horizonMs,contribution,gyro.status,gyro);
+        }
+        private static Quaternion pitchIncrement(Quaternion pose,double degrees) {
+            if(Math.abs(degrees)<1e-12) return pose;
+            double[] forward=pose.rotate(new double[]{0,0,-1}); double horizontal=Math.hypot(forward[0],forward[2]);
+            if(horizontal<.1) return pose;
+            return Quaternion.axisAngle(-forward[2]/horizontal,0,forward[0]/horizontal,Math.toRadians(degrees)).multiply(pose);
         }
         public String method() {
             return gyroHorizonMs>0?(periodicHorizonMs>0?"blend":"gyro"):(periodicHorizonMs>0?"periodic":"none");

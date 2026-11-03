@@ -19,6 +19,11 @@ import com.rokid.stabledemo.core.GyroPredictor;
 
 /** Sensor callbacks, native state and reference updates all run on one dedicated thread. */
 final class TrackingController implements SensorEventListener {
+    static final class Frame {
+        final Snapshot pose;
+        final GyroPredictor.State gyro;
+        Frame(Snapshot pose,GyroPredictor.State gyro) { this.pose=pose; this.gyro=gyro; }
+    }
     static final class Snapshot {
         final Quaternion relative;
         final long timestampNs;
@@ -50,6 +55,7 @@ final class TrackingController implements SensorEventListener {
     private final boolean trainPrediction;
     private final ImuLog imuLog;
     private volatile Snapshot snapshot = new Snapshot(Quaternion.IDENTITY, 0, false, "等待 IMU", 0);
+    private volatile Frame frame=new Frame(snapshot,gyroState);
     private HandlerThread thread;
     private Handler handler;
     private boolean active;
@@ -86,6 +92,11 @@ final class TrackingController implements SensorEventListener {
     }
     Snapshot latest() { return snapshot; }
     GyroPredictor.State latestGyro() { return gyroState; }
+    Frame readFrame() { return frame; }
+    private void publishFrame() {
+        Frame previous=frame;
+        if(previous.pose!=snapshot || previous.gyro!=gyroState) frame=new Frame(snapshot,gyroState);
+    }
 
     void start() {
         if (thread != null) return;
@@ -103,6 +114,7 @@ final class TrackingController implements SensorEventListener {
             gyroPredictor.reset(); gyroState=GyroPredictor.State.EMPTY;
             releaseNative(); reference=null;
             snapshot=new Snapshot(Quaternion.IDENTITY,0,false,"已停止",0);
+            publishFrame();
             ending.quitSafely();
         });
         thread=null; handler=null;
@@ -148,6 +160,7 @@ final class TrackingController implements SensorEventListener {
             }
             if (registered) {
                 snapshot=new Snapshot(Quaternion.IDENTITY,0,false,"等待"+sourceName,0);
+                publishFrame();
                 long selectedGeneration=generation;
                 long selectedAt=SystemClock.elapsedRealtime();
                 Handler current=handler;
@@ -165,6 +178,7 @@ final class TrackingController implements SensorEventListener {
             manager.unregisterListener(this); releaseNative(); candidate++;
         }
         snapshot=new Snapshot(Quaternion.IDENTITY,0,false,"IMU 不可用 · 单击重试",0);
+        publishFrame();
     }
 
     private void releaseNative() {
@@ -205,6 +219,7 @@ final class TrackingController implements SensorEventListener {
                         event.timestamp,nativeResult[4] != 0);
             }
         } catch (IllegalArgumentException e) { Log.w("Rokid3DoF","Invalid sensor pose discarded",e); }
+        finally { publishFrame(); }
     }
 
     private void publish(Quaternion absolute, long timestampNs, boolean initializing) {
@@ -227,6 +242,7 @@ final class TrackingController implements SensorEventListener {
             snapshot=new Snapshot(relative,timestampNs,true,sourceName,hz,referenceEpoch,
                     trainPrediction?predictor.onPose(relative,timestampNs):PitchPredictor.State.EMPTY);
         }
+        publishFrame();
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
 }

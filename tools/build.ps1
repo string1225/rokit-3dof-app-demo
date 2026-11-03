@@ -1,6 +1,7 @@
 param(
     [string]$AndroidSdk = $env:ANDROID_HOME,
     [string]$JavaHome = $env:JAVA_HOME,
+    [string]$DebugKeystore = $env:ROKID_DEBUG_KEYSTORE,
     [string]$DeviceSerial = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -18,7 +19,13 @@ try {
     $outputDirectory = Join-Path $repoRoot 'outputs'
     $verificationDirectory = Join-Path $outputDirectory 'verification'
     [System.IO.Directory]::CreateDirectory($verificationDirectory) | Out-Null
-    & ./gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --console=plain 2>&1 |
+    $signingArguments = @()
+    if ($DebugKeystore) {
+        if (-not (Test-Path -LiteralPath $DebugKeystore)) { throw 'Pass -DebugKeystore pointing to the existing debug signing key.' }
+        $signingArguments = @("-Pandroid.injected.signing.store.file=$DebugKeystore", '-Pandroid.injected.signing.store.password=android',
+            '-Pandroid.injected.signing.key.alias=androiddebugkey', '-Pandroid.injected.signing.key.password=android')
+    }
+    & ./gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --console=plain @signingArguments 2>&1 |
         Tee-Object -FilePath (Join-Path $verificationDirectory 'build.txt')
     if ($LASTEXITCODE -ne 0) { throw "Gradle verification failed: $LASTEXITCODE" }
     $apkPath = Join-Path $repoRoot 'app/build/outputs/apk/debug/app-debug.apk'

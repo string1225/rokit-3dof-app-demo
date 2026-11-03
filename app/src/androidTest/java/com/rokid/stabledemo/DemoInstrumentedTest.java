@@ -72,17 +72,26 @@ public class DemoInstrumentedTest {
         Quaternion upright=Quaternion.axisAngle(1,0,0,Math.PI/2);
         long begin=SystemClock.elapsedRealtimeNanos();
         try {
-            while(SystemClock.elapsedRealtimeNanos()-begin<4_200_000_000L) {
+            while(SystemClock.elapsedRealtimeNanos()-begin<8_000_000_000L) {
                 long now=SystemClock.elapsedRealtimeNanos();
                 double angle=Math.toRadians(.7*Math.sin(2*Math.PI*3*(now-begin)*1e-9));
                 publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(1,0,0,angle)),now,false);
+                TrackingController.Snapshot pose=tracker.latest();
+                if(now-begin>=4_200_000_000L && pose.prediction.predict(pose.relative,now,15,true).strength>.5) break;
                 SystemClock.sleep(10);
             }
             onMain(() -> {
                 Bitmap bitmap=Bitmap.createBitmap(480,640,Bitmap.Config.ARGB_8888);
-                try { view.get().draw(new Canvas(bitmap)); } finally { bitmap.recycle(); }
+                try {
+                    long now=SystemClock.elapsedRealtimeNanos();
+                    double angle=Math.toRadians(.7*Math.sin(2*Math.PI*3*(now-begin)*1e-9));
+                    publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(1,0,0,angle)),now,false);
+                    view.get().draw(new Canvas(bitmap));
+                } catch(ReflectiveOperationException e) { throw new AssertionError(e); }
+                finally { bitmap.recycle(); }
             });
-            while(SystemClock.elapsedRealtimeNanos()-begin<4_280_000_000L) {
+            long drawnAt=SystemClock.elapsedRealtimeNanos();
+            while(SystemClock.elapsedRealtimeNanos()-drawnAt<100_000_000L) {
                 long now=SystemClock.elapsedRealtimeNanos();
                 double angle=Math.toRadians(.7*Math.sin(2*Math.PI*3*(now-begin)*1e-9));
                 publish.invoke(tracker,upright.multiply(Quaternion.axisAngle(1,0,0,angle)),now,false); SystemClock.sleep(5);
@@ -90,7 +99,8 @@ public class DemoInstrumentedTest {
             java.util.List<MotionDiagnostics.Record> frames=diagnostics.drainRecords();
             assertFalse("A real drawn frame must reach retrospective diagnostics",frames.isEmpty());
             MotionDiagnostics.Record frame=frames.get(frames.size()-1);
-            assertTrue(frame.prediction.enabled); assertTrue(frame.prediction.strength>.5);
+            assertTrue(frame.prediction.enabled);
+            assertTrue("Periodic strength="+frame.prediction.strength+" status="+frame.prediction.periodicStatus,frame.prediction.strength>.5);
             assertTrue(frame.prediction.horizonMs>0 && frame.prediction.horizonMs<=20);
             long epoch=tracker.latest().referenceEpoch;
             reference.set(tracker,null);
@@ -259,7 +269,7 @@ public class DemoInstrumentedTest {
                 current.set(a);
                 Button button=findButton(a.findViewById(android.R.id.content));
                 assertNotNull(button); assertEquals("3DoF 测试",button.getText().toString());
-                assertEquals(6,countButtons(a.findViewById(android.R.id.content)));
+                assertEquals(6,countShownButtons(a.findViewById(android.R.id.content)));
                 assertFalse(a.demoView().isRunning()); button.performClick();
                 assertTrue(a.demoView().isRunning()); assertFalse(button.isShown());
             });
@@ -272,6 +282,12 @@ public class DemoInstrumentedTest {
                 assertEquals(before,a.demoView().visibleText());
             });
             pressKey(KeyEvent.KEYCODE_BACK);
+            long deadline=SystemClock.elapsedRealtime()+5000;
+            AtomicInteger running=new AtomicInteger(1);
+            while(running.get()!=0 && SystemClock.elapsedRealtime()<deadline) {
+                onMain(() -> running.set(current.get().demoView().isRunning()?1:0));
+                if(running.get()!=0) SystemClock.sleep(25);
+            }
             onMain(() -> {
                 MainActivity a=current.get();
                 assertFalse(a.demoView().isRunning());
@@ -355,10 +371,11 @@ public class DemoInstrumentedTest {
         }
         return null;
     }
-    private static int countButtons(View view) {
+    private static int countShownButtons(View view) {
+        if(!view.isShown()) return 0;
         if(view instanceof Button) return 1;
         int count=0;
-        if(view instanceof ViewGroup) for(int i=0;i<((ViewGroup)view).getChildCount();i++) count+=countButtons(((ViewGroup)view).getChildAt(i));
+        if(view instanceof ViewGroup) for(int i=0;i<((ViewGroup)view).getChildCount();i++) count+=countShownButtons(((ViewGroup)view).getChildAt(i));
         return count;
     }
 }

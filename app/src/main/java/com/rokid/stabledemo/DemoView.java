@@ -51,6 +51,9 @@ final class DemoView extends View {
     private boolean followEnabled=true;
     private double predictionLeadMs=15;
     private int gyroHorizonMs;
+    private GyroPredictor.Model gyroModel=GyroPredictor.Model.LATEST;
+    private double correctionCap=.75;
+    private boolean tuningVisible;
     private long startMs=-1, noticeUntilMs;
     private long referenceEpoch=Long.MIN_VALUE;
     private String notice="";
@@ -100,6 +103,14 @@ final class DemoView extends View {
         predictionLeadMs=Double.isFinite(leadMs)?Math.max(5,Math.min(20,leadMs)):15;
         setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；陀螺外推"+gyroHorizonMs+"ms；跟随"+(followEnabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
     }
+    void setGyroOptions(int ms,GyroPredictor.Model model,double cap) {
+        gyroHorizonMs=GyroPredictor.validHorizon(ms)?ms:0; gyroModel=model;
+        correctionCap=GyroPredictor.validCap(cap)?cap:.75;
+        setContentDescription("3DoF 打字机演示；周期预测"+(predictionEnabled?"开":"关")+"；陀螺外推"+gyroHorizonMs
+                +"ms；三轴；"+gyroModel.label+"；上限"+correctionCap+"度；跟随"+(followEnabled?"开":"关")+"；单击维稳，长按回中，双击返回");
+        invalidate();
+    }
+    void setTuningVisible(boolean visible) { tuningVisible=visible; invalidate(); }
     void setFrameDurationNs(long duration) {
         if(duration>0 && duration<500_000_000L) appFrameMs=appFrameMs==0?duration*1e-6:appFrameMs*.9+duration*1e-7;
     }
@@ -136,27 +147,28 @@ final class DemoView extends View {
         canvas.translate((getWidth()-480*scale)/2,(getHeight()-640*scale)/2);
         canvas.scale(scale,scale); canvas.translate(0,80);
         canvas.clipRect(0,0,480,480);
-        TrackingController.Snapshot state=tracker.latest();
+        MotionDiagnostics.Snapshot analysis=diagnostics.latestSnapshot();
         long now=SystemClock.elapsedRealtime();
-        boolean fresh=state.ready && PoseState.isFresh(state.timestampNs,SystemClock.elapsedRealtimeNanos());
-        if (fresh && startMs < 0) startMs=now;
+        TrackingController.Frame tracking=tracker.readFrame();
+        long readNs=SystemClock.elapsedRealtimeNanos();
+        TrackingController.Snapshot state=tracking.pose;
+        boolean fresh=state.ready && PoseState.isFresh(state.timestampNs,readNs);
+        if(fresh && startMs<0) startMs=now;
         frame=playback.at(startMs < 0 ? 0 : now-startMs);
-        MotionDiagnostics.Snapshot analysis=diagnostics.snapshot(drawStartNs);
-        PitchPredictor.Prediction prediction=state.prediction.predict(state.relative,drawStartNs,predictionLeadMs,
-                predictionEnabled&&stabilized&&fresh).withGyro(state.relative,tracker.latestGyro().predict(
-                        state.relative,state.timestampNs,drawStartNs,gyroHorizonMs,stabilized&&fresh));
-        drawStatus(canvas,state,fresh,now,analysis,prediction);
+        PitchPredictor.Prediction prediction=state.prediction.predict(state.relative,readNs,predictionLeadMs,
+                predictionEnabled&&stabilized&&fresh).withGyro(state.relative,tracking.gyro.predictDisplay(
+                        state.relative,state.timestampNs,readNs,gyroHorizonMs,stabilized&&fresh,gyroModel,correctionCap));
         Quaternion applied=Quaternion.IDENTITY,anchor=Quaternion.IDENTITY,baseline=Quaternion.IDENTITY;
         if (fresh) {
             if(state.referenceEpoch!=referenceEpoch) {
-                follower.recenter(state.relative,drawStartNs); referenceEpoch=state.referenceEpoch;
+                follower.recenter(state.relative,readNs); referenceEpoch=state.referenceEpoch;
             }
             if(stabilized) {
-                LevelFollow.Result result=follower.update(state.relative,drawStartNs,projection,followEnabled);
+                LevelFollow.Result result=follower.update(state.relative,readNs,projection,followEnabled);
                 baseline=result.compensatedHead; anchor=result.anchor;
                 applied=anchor.inverse().multiply(prediction.pose);
                 if(result.snapped) { notice="超界 · 已水平回中"; noticeUntilMs=now+1200; }
-            } else if(followEnabled) follower.recenter(state.relative,drawStartNs);
+            } else if(followEnabled) follower.recenter(state.relative,readNs);
             Quaternion head=applied;
             boolean visible=true;
             for (int i=0;i<4;i++) {
@@ -178,10 +190,11 @@ final class DemoView extends View {
             canvas.drawText(state.ready ? "长按重新连接 · 双击返回" : "保持头部静止片刻",240,253,small);
             small.setTextAlign(Paint.Align.LEFT);
         }
-        chart.draw(canvas,analysis);
+        drawStatus(canvas,state,fresh,now,analysis,prediction);
+        if(!tuningVisible) chart.draw(canvas,analysis);
         small.setTextSize(13);
         canvas.drawText(powerStatus.get(),20,428,small);
-        canvas.drawText(String.format(Locale.ROOT,"RMS 入%s° 普%s° 当前%s°  %sHz",
+        canvas.drawText(String.format(Locale.ROOT,"俯仰 入%s° 普%s° 当前%s°  %sHz",
                 number(analysis.inputRmsDeg),number(analysis.baselineResidualRmsDeg),number(analysis.residualRmsDeg),number(analysis.renderHz)),20,447,small);
         canvas.drawLine(20,456,460,456,line);
         canvas.drawText("单击开关 · 长按水平回中 · 双击返回保存",20,477,small);
@@ -209,8 +222,8 @@ final class DemoView extends View {
         canvas.drawText(now < noticeUntilMs ? notice : status,20,46,small);
         canvas.drawText(String.format(Locale.ROOT,"样本%sms  绘制%sms  显示≈%s±%sms",number(s.sampleAgeMs),
                 number(s.cpuDrawMs),number(s.estimatedDisplayMs),number(s.uncertaintyMs)),20,59,small);
-        String gyro=gyroHorizonMs==0?"外推0ms":String.format(Locale.ROOT,"外推%dms%s",gyroHorizonMs,
-                prediction.gyroHorizonMs>0?"生效":"待用");
+        String gyro=gyroHorizonMs==0?"三轴外推关":String.format(Locale.ROOT,"三轴%s+%dms%s%s",gyroModel.label,gyroHorizonMs,
+                prediction.gyroHorizonMs>0?"生效":"待用",prediction.gyro.limited?"·触顶":"");
         String periodic=!predictionEnabled?"周期关":prediction.periodicHorizonMs>0
                 ?String.format(Locale.ROOT,"周期%.1fHz %.0f%%",prediction.frequencyHz,prediction.strength*100)
                 :"周期待用:"+periodicReason(prediction.periodicStatus);

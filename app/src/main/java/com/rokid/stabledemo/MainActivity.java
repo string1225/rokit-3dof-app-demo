@@ -48,6 +48,8 @@ public final class MainActivity extends ComponentActivity {
     private DemoView demo;
     private PowerTestView powerView;
     private LinearLayout menu;
+    private PredictionTuner tuner;
+    private Button tuneButton;
     private final Button[] options=new Button[6];
     private TextView menuStatus;
     private TrackingController tracker;
@@ -63,10 +65,12 @@ public final class MainActivity extends ComponentActivity {
     private int selected,benchmarkGeneration;
     private float horizontalFov=30;
     private float followTau=1.5f,followSpeed=12f;
-    private boolean predictionEnabled=true;
+    private boolean predictionEnabled;
     private boolean followEnabled=true,imuRecordingEnabled;
     private float predictionLeadMs=15;
     private int gyroHorizonMs;
+    private GyroPredictor.Model gyroModel=GyroPredictor.Model.LATEST;
+    private double correctionCap=.75;
     private PitchPredictor.Profile periodicProfile=PitchPredictor.Profile.RELAXED;
     private long stageDurationMs=300_000;
     private final Window.OnFrameMetricsAvailableListener frameListener=(window,metrics,dropped) -> {
@@ -94,12 +98,16 @@ public final class MainActivity extends ComponentActivity {
         if(!Float.isFinite(followSpeed)||followSpeed<1||followSpeed>60) followSpeed=12f;
         demoAxes=AxisProfile.usesLegacyDemo(getIntent().getStringExtra("axes"));
         forceFusion=getIntent().getBooleanExtra("force_fusion",false);
-        predictionEnabled=getIntent().getBooleanExtra("prediction_enabled",getPreferences(MODE_PRIVATE).getBoolean("prediction_enabled",true));
+        predictionEnabled=getIntent().getBooleanExtra("prediction_enabled",getPreferences(MODE_PRIVATE).getBoolean("prediction_enabled",false));
         String profile=getIntent().getStringExtra("periodic_profile");
         if(profile==null) profile=getPreferences(MODE_PRIVATE).getString("periodic_profile","relaxed");
         periodicProfile="standard".equals(profile)?PitchPredictor.Profile.STANDARD:PitchPredictor.Profile.RELAXED;
         gyroHorizonMs=getIntent().getIntExtra("gyro_prediction_ms",getPreferences(MODE_PRIVATE).getInt("gyro_prediction_ms",0));
         if(!GyroPredictor.validHorizon(gyroHorizonMs)) gyroHorizonMs=0;
+        String model=getIntent().getStringExtra("gyro_model");
+        gyroModel=GyroPredictor.Model.fromId(model==null?getPreferences(MODE_PRIVATE).getString("gyro_model","latest"):model);
+        correctionCap=getIntent().getFloatExtra("gyro_cap_deg",getPreferences(MODE_PRIVATE).getFloat("gyro_cap_deg",.75f));
+        if(!GyroPredictor.validCap(correctionCap)) correctionCap=.75;
         followEnabled=getIntent().getBooleanExtra("follow_enabled",getPreferences(MODE_PRIVATE).getBoolean("follow_enabled",true));
         imuRecordingEnabled=getIntent().getBooleanExtra("imu_recording_enabled",false);
         predictionLeadMs=getIntent().getFloatExtra("prediction_lead_ms",15);
@@ -116,7 +124,7 @@ public final class MainActivity extends ComponentActivity {
         root.addView(demo,new FrameLayout.LayoutParams(-1,-1));
         powerView=new PowerTestView(this,this::doubleClick);
         root.addView(powerView,new FrameLayout.LayoutParams(-1,-1)); powerView.setVisibility(View.GONE);
-        buildMenu(root); setContentView(root); windowSetup();
+        buildMenu(root); buildTuner(root); setContentView(root); windowSetup();
         getWindow().addOnFrameMetricsAvailableListener(frameListener,new Handler(Looper.getMainLooper()));
         getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true) {
             // On newer firmware touchpad double-tap reaches the framework back callback.
@@ -162,6 +170,34 @@ public final class MainActivity extends ComponentActivity {
     }
     private String periodicLabel() {
         return "周期预测 · "+(!predictionEnabled?"关":periodicProfile==PitchPredictor.Profile.STANDARD?"原门槛":"宽松");
+    }
+    private void buildTuner(FrameLayout root) {
+        float scale=Math.min(getResources().getDisplayMetrics().widthPixels/480f,getResources().getDisplayMetrics().heightPixels/640f);
+        tuner=new PredictionTuner(this,scale,this::applyGyroOptions,() -> showTuner(false));
+        FrameLayout.LayoutParams panel=new FrameLayout.LayoutParams(Math.round(440*scale),Math.round(100*scale),Gravity.TOP|Gravity.CENTER_HORIZONTAL);
+        panel.topMargin=Math.round(400*scale)+(getResources().getDisplayMetrics().heightPixels-Math.round(640*scale))/2;
+        root.addView(tuner,panel); tuner.setVisibility(View.GONE);
+        tuneButton=new Button(this); tuneButton.setTag("gyro_tuner_open"); tuneButton.setText("调参");
+        tuneButton.setTextColor(Color.GREEN); tuneButton.setBackgroundColor(Color.BLACK); tuneButton.setPadding(0,0,0,0);
+        tuneButton.setMinHeight(0); tuneButton.setMinimumHeight(0); tuneButton.setTextSize(TypedValue.COMPLEX_UNIT_PX,15*scale);
+        tuneButton.setFocusable(false); tuneButton.setOnClickListener(v -> showTuner(tuner.getVisibility()!=View.VISIBLE));
+        FrameLayout.LayoutParams entry=new FrameLayout.LayoutParams(Math.round(70*scale),Math.round(28*scale),Gravity.TOP|Gravity.END);
+        entry.topMargin=Math.round(84*scale)+(getResources().getDisplayMetrics().heightPixels-Math.round(640*scale))/2;
+        entry.rightMargin=Math.round(12*scale)+(getResources().getDisplayMetrics().widthPixels-Math.round(480*scale))/2;
+        root.addView(tuneButton,entry); tuneButton.setVisibility(View.GONE);
+    }
+    private void showTuner(boolean visible) {
+        boolean show=visible && mode==Mode.DOF;
+        tuner.configure(gyroHorizonMs,gyroModel,correctionCap); tuner.setVisibility(show?View.VISIBLE:View.GONE);
+        demo.setTuningVisible(show); demo.requestFocus();
+    }
+    private boolean tuning() { return mode==Mode.DOF && tuner.getVisibility()==View.VISIBLE; }
+    private void applyGyroOptions(int ms,GyroPredictor.Model model,double cap) {
+        gyroHorizonMs=ms; gyroModel=model; correctionCap=cap;
+        demo.setGyroOptions(ms,model,cap); options[5].setText("陀螺外推 · "+ms+" ms");
+        getPreferences(MODE_PRIVATE).edit().putInt("gyro_prediction_ms",ms).putString("gyro_model",model.id)
+                .putFloat("gyro_cap_deg",(float)cap).apply();
+        if(recorder!=null) recorder.note("prediction_options","gyro_prediction_ms="+ms+" gyro_model="+model.id+" gyro_cap_deg="+cap);
     }
     private TextView label(String text,float size) {
         TextView view=new TextView(this); view.setText(text); view.setTextColor(Color.GREEN);
@@ -220,10 +256,7 @@ public final class MainActivity extends ComponentActivity {
             options[4].setText("IMU 录制 · "+(imuRecordingEnabled?"开":"关"));
             menuStatus.setText(imuRecordingEnabled?"进入3DoF开始录制 · 双击返回停止并导出":"IMU录制已关闭 · 后续3DoF不保存原始数据");
         } else {
-            gyroHorizonMs=GyroPredictor.nextHorizon(gyroHorizonMs);
-            getPreferences(MODE_PRIVATE).edit().putInt("gyro_prediction_ms",gyroHorizonMs).apply();
-            options[5].setText("陀螺外推 · "+gyroHorizonMs+" ms");
-            menuStatus.setText(gyroHorizonMs==0?"陀螺外推已关 · 周期预测独立选择":"陀螺外推"+gyroHorizonMs+"ms · 选择3DoF开始对比");
+            beginDof(); showTuner(true);
         }
     }
     private void beginDof() {
@@ -231,6 +264,7 @@ public final class MainActivity extends ComponentActivity {
         stopDof("restart"); mode=Mode.DOF; menu.setVisibility(View.GONE); powerView.setVisibility(View.GONE); demo.setVisibility(View.VISIBLE);
         MotionDiagnostics diagnostics=new MotionDiagnostics();
         demo.setFollowEnabled(followEnabled); demo.setPredictionOptions(predictionEnabled,predictionLeadMs,gyroHorizonMs);
+        demo.setGyroOptions(gyroHorizonMs,gyroModel,correctionCap); tuneButton.setVisibility(View.VISIBLE); showTuner(false);
         loggingError="";
         try {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
@@ -244,7 +278,9 @@ public final class MainActivity extends ComponentActivity {
             recorder.metadata("periodic_required_stable_fits",periodicProfile.requiredStableFits);
             recorder.metadata("periodic_frequency_tolerance_hz",periodicProfile.frequencyToleranceHz);
             recorder.metadata("gyro_prediction_ms",gyroHorizonMs);
-            recorder.metadata("prediction_policy","Pitch-only: gyro uses a fixed 0/15/20ms horizon from the source pose timestamp, not draw time; sample/gyro age >25ms, pose/gyro separation >20ms, speed >180deg/s or rate change >3000deg/s^2 rejected. Periodic model 1..8Hz uses the selected quality/cycle/stability profile and sample age + display lead capped at 20ms. When both are active, confidence blends their corrections instead of summing full forecasts. Total added pitch capped at 0.75deg. Follow uses measured pose. No optical latency calibration.");
+            recorder.metadata("gyro_model",gyroModel.id); recorder.metadata("gyro_cap_deg",correctionCap);
+            recorder.metadata("prediction_axes","xyz_quaternion"); recorder.metadata("prediction_time_basis","read_time_plus_lead");
+            recorder.metadata("prediction_policy","Three-axis body-rate quaternion prediction. Live 0..100ms selected display lead: target=prediction read time+lead, total propagation=source pose age+lead; zero disables. Optical time not calibrated. latest=constant latest angular velocity. window3/window5/window10=causal least-squares angular acceleration with latest rate retained, noisy-fit fallback, braking integrated only up to predicted stop without reversal, acceleration decays with 20ms constant, speed<0.5deg/s stop guard. Fits run on sensor thread. Existing stale/fast/discontinuity gates retained. Total rotation cap 0.75/3/6deg. Periodic remains pitch-only, horizon capped at 20ms, confidence replaces only a share of pitch while retaining gyro yaw/roll. Follow uses measured pose. Initial settings here; live changes in stages.jsonl and per-frame CSV.");
             recorder.metadata("content_top_screen_px",80+DemoView.CONTENT_TOP);
             recorder.metadata("content_bottom_screen_px",80+DemoView.CONTENT_BOTTOM);
             recorder.metadata("content_center_screen_y_px",80+(DemoView.CONTENT_TOP+DemoView.CONTENT_BOTTOM)/2);
@@ -267,7 +303,8 @@ public final class MainActivity extends ComponentActivity {
             if(motionLog!=null && !motionLog.error().isEmpty()) return motionLog.error();
             return "IMU录制关 · "+(recorder!=null?recorder.displayStatus():"耗电记录不可用");
         });
-        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics,predictionEnabled,imuLog,periodicProfile,gyroHorizonMs>0);
+        // Keep gyro ready even at 0ms, so live slider changes never restart tracking or the anchor.
+        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics,predictionEnabled,imuLog,periodicProfile,true);
         tracker.start(); demo.begin(tracker,diagnostics); demo.requestFocus();
     }
     private void stopDof(String reason) {
@@ -312,28 +349,33 @@ public final class MainActivity extends ComponentActivity {
         if(!resumed) { pendingPowerStart=true; return; }
         pendingPowerStart=false;
         if(benchmark!=null && !benchmark.isFinished()) return;
+        showTuner(false); tuneButton.setVisibility(View.GONE);
         stopDof("switch_to_power_test"); demo.end(); demo.setVisibility(View.GONE); menu.setVisibility(View.GONE); mode=Mode.POWER;
         int generation=++benchmarkGeneration;
         benchmark=new PowerBenchmark(this,stageDurationMs,() -> { if(generation==benchmarkGeneration) powerView.invalidate(); });
         powerView.attach(benchmark,stageDurationMs); powerView.setVisibility(View.VISIBLE); powerView.foreground(true); powerView.requestFocus(); benchmark.start();
     }
     private void returnToMenu(String reason) {
+        showTuner(false); tuneButton.setVisibility(View.GONE);
         pendingPowerStart=false; stopDof(reason); demo.end(); demo.setVisibility(View.GONE);
         if(benchmark!=null && benchmark.isRunning()) { benchmark.abort(reason); menuStatus.setText("测试已中止，正在保存记录"); }
         mode=Mode.MENU; powerView.setVisibility(View.GONE); menu.setVisibility(View.VISIBLE); highlightSelection();
     }
     private void click() {
         long now=SystemClock.elapsedRealtime(); if(now-lastClickMs<140) return; lastClickMs=now;
+        if(tuning()) { tuner.nextField(); return; }
         if(mode==Mode.MENU) { selected=(selected+1)%options.length; highlightSelection(); }
         else if(mode==Mode.DOF) { if(demo.unavailable()) beginDof(); else { demo.toggle(); if(recorder!=null) recorder.note("stabilization",demo.isStabilized()?"enabled":"disabled"); } }
     }
     private void doubleClick() { routeBack(false); }
     private void routeBack(boolean systemBack) {
         long now=SystemClock.elapsedRealtime(); if(now-lastBackMs<250) return; lastBackMs=now;
+        if(tuning()) { tuner.activate(); return; }
         if(mode==Mode.MENU) { if(systemBack) finish(); else enterSelected(); }
         else returnToMenu("user_back");
     }
     private void longPress() {
+        if(tuning()) { tuner.longPress(); return; }
         if(mode==Mode.MENU) { finish(); return; }
         if(mode!=Mode.DOF) return;
         long now=SystemClock.elapsedRealtime(); if(now-lastCenterMs<200) return; lastCenterMs=now;
@@ -345,6 +387,14 @@ public final class MainActivity extends ComponentActivity {
     // Predictive/system back is separately registered with OnBackPressedDispatcher above.
     @SuppressLint("GestureBackNavigation")
     @Override public boolean onKeyDown(int key,KeyEvent event) {
+        if(tuning() && (key==KeyEvent.KEYCODE_VOLUME_UP||key==KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            tuner.adjust(key==KeyEvent.KEYCODE_VOLUME_UP?1:-1); return true;
+        }
+        if(mode==Mode.DOF && key==KeyEvent.KEYCODE_MENU) { if(event.getRepeatCount()==0) showTuner(!tuning()); return true; }
+        if(tuning() && (key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT
+                ||key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) {
+            tuner.adjust(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:key==KeyEvent.KEYCODE_DPAD_RIGHT?1:key==KeyEvent.KEYCODE_DPAD_UP?10:-10); return true;
+        }
         if(key==KeyEvent.KEYCODE_ENTER||key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_SPACE) {
             if(event.getRepeatCount()==0) longKey=false;
             if(event.isLongPress()&&!longKey) { longKey=true; longPress(); } return true;
@@ -358,6 +408,10 @@ public final class MainActivity extends ComponentActivity {
     }
     @SuppressLint("GestureBackNavigation")
     @Override public boolean onKeyUp(int key,KeyEvent event) {
+        if(tuning() && (key==KeyEvent.KEYCODE_VOLUME_UP||key==KeyEvent.KEYCODE_VOLUME_DOWN)) return true;
+        if(mode==Mode.DOF && key==KeyEvent.KEYCODE_MENU) return true;
+        if(tuning() && (key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT
+                ||key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) return true;
         if(key==KeyEvent.KEYCODE_ENTER||key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_SPACE) { if(!longKey) click(); return true; }
         if(key==KeyEvent.KEYCODE_PROG_BLUE) return true;
         if(key==KeyEvent.KEYCODE_BACK) { doubleClick(); return true; }

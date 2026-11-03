@@ -5,6 +5,22 @@ import static org.junit.Assert.*;
 
 public class MotionDiagnosticsTest {
     private static final long START=10_000_000_000L;
+    @Test public void pureYawImprovementIsObservableEvenWhenPitchResidualIsZero() {
+        MotionDiagnostics diagnostics=new MotionDiagnostics(); GyroPredictor gyro=new GyroPredictor();
+        for(int i=0;i<=100;i++) {
+            long t=START+i*10_000_000L;
+            Quaternion head=Quaternion.axisAngle(0,1,0,Math.toRadians(20*i*.01));
+            diagnostics.onPose(head,t,t+1_000_000L);
+            GyroPredictor.Result g=gyro.onGyro(0,Math.toRadians(20),0,t,t+1_000_000L)
+                    .predictDisplay(head,t,t+2_000_000L,18,true,GyroPredictor.Model.LATEST,6);
+            PitchPredictor.Prediction p=PitchPredictor.Prediction.unavailable(head,false).withGyro(head,g);
+            diagnostics.frameSubmitted(p.pose,Quaternion.IDENTITY,head,p,t+3_000_000L,t+20_000_000L,t,1,2,16);
+        }
+        java.util.List<MotionDiagnostics.Record> frames=diagnostics.drainRecords();
+        MotionDiagnostics.Record last=frames.get(frames.size()-1);
+        assertEquals(0,last.residualPitchDeg,1e-8); assertEquals(.4,last.baselineResidualRotationDeg,1e-7);
+        assertTrue(last.residualRotationDeg<.00001); assertTrue(Math.abs(last.applied.y)>.01);
+    }
     @Test public void predictedAndOrdinaryResidualsUseTheSameActualFuturePoseAndAnchor() {
         MotionDiagnostics diagnostics=new MotionDiagnostics(); PitchPredictor predictor=new PitchPredictor();
         LevelFollow follow=new LevelFollow(1.5,12);
