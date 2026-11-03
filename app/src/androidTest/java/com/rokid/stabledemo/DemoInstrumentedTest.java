@@ -102,13 +102,15 @@ public class DemoInstrumentedTest {
 
     @Test public void predictionCanBeConfiguredFromTheMenuWithoutStartingARun() {
         AtomicReference<MainActivity> current=new AtomicReference<>();
-        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+        Intent intent=new Intent(InstrumentationRegistry.getInstrumentation().getTargetContext(),MainActivity.class)
+                .putExtra("prediction_enabled",true).putExtra("periodic_profile","relaxed").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(intent)) {
           try {
             scenario.onActivity(a -> {
                 current.set(a);
-                Button prediction=findButton(a.findViewById(android.R.id.content),"预测补偿");
+                Button prediction=findButton(a.findViewById(android.R.id.content),"周期预测");
                 assertNotNull("Prediction needs an operable menu setting",prediction);
-                assertTrue(prediction.getText().toString().endsWith("开"));
+                assertTrue(prediction.getText().toString().endsWith("宽松"));
                 prediction.performClick();
                 assertTrue(prediction.getText().toString().endsWith("关"));
                 assertFalse(a.demoView().isRunning()); assertNull(a.powerBenchmark());
@@ -257,7 +259,7 @@ public class DemoInstrumentedTest {
                 current.set(a);
                 Button button=findButton(a.findViewById(android.R.id.content));
                 assertNotNull(button); assertEquals("3DoF 测试",button.getText().toString());
-                assertEquals(5,countButtons(a.findViewById(android.R.id.content)));
+                assertEquals(6,countButtons(a.findViewById(android.R.id.content)));
                 assertFalse(a.demoView().isRunning()); button.performClick();
                 assertTrue(a.demoView().isRunning()); assertFalse(button.isShown());
             });

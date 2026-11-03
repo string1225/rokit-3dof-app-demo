@@ -56,6 +56,7 @@ public class ImuRecordingInstrumentedTest {
             Set<String> before=new HashSet<>(); File[] previous=runs.listFiles();
             if(previous!=null) for(File file:previous) before.add(file.getName());
             Intent intent=new Intent(context,MainActivity.class).putExtra("imu_recording_enabled",enabled)
+                    .putExtra("gyro_prediction_ms",configuration==0?20:0)
                     .putExtra("force_fusion",forceFusion)
                     .putExtra("follow_enabled",false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             AtomicReference<MainActivity> current=new AtomicReference<>();
@@ -76,6 +77,7 @@ public class ImuRecordingInstrumentedTest {
                     File exported=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),"RokidTests/"+run.getName());
                     JSONObject config=json(new File(run,"metadata.json"));
                     assertEquals(enabled,config.getBoolean("imu_recording_enabled")); assertFalse(config.getBoolean("follow_enabled"));
+                    assertEquals(configuration==0?20:0,config.getInt("gyro_prediction_ms"));
                     if(enabled) {
                         for(String name:new String[]{"imu_raw.csv","imu_poses.csv","imu_metadata.json"})
                             assertArrayEquals("Export must exactly match final local data",Files.readAllBytes(new File(run,name).toPath()),Files.readAllBytes(new File(exported,name).toPath()));

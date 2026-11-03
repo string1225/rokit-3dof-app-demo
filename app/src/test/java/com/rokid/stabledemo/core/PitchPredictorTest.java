@@ -5,6 +5,39 @@ import static org.junit.Assert.*;
 
 public class PitchPredictorTest {
     private static final long START=10_000_000_000L;
+    @Test public void relaxedProfileAcceptsMostlyPeriodicMotionThatStandardRejects() {
+        PitchPredictor standard=new PitchPredictor(PitchPredictor.Profile.STANDARD);
+        PitchPredictor relaxed=new PitchPredictor(PitchPredictor.Profile.RELAXED);
+        PitchPredictor.Prediction a=null,b=null;
+        for(int i=0;i<=1600;i++) {
+            double t=i*.005;
+            Quaternion head=pitch(signal(2.35,t)+.30*signal(4.7,t));
+            a=standard.onPose(head,time(t)).predict(head,time(t),20,true);
+            b=relaxed.onPose(head,time(t)).predict(head,time(t),20,true);
+        }
+        assertEquals(0,a.strength,.001);
+        assertTrue("A modest second component should permit the relaxed trial",b.strength>.05);
+        assertEquals(2.35,b.frequencyHz,.05);
+        assertTrue(b.fitQuality>.88 && b.fitQuality<.94);
+    }
+    @Test public void relaxedProfileLocksEarlierButStillRejectsBroadbandAndStaticMotion() {
+        long[] first=new long[2];
+        PitchPredictor[] predictors={new PitchPredictor(PitchPredictor.Profile.STANDARD),new PitchPredictor(PitchPredictor.Profile.RELAXED)};
+        for(int i=0;i<=800;i++) {
+            double t=i*.005; Quaternion head=pitch(signal(1.5,t));
+            for(int j=0;j<2;j++) if(predictors[j].onPose(head,time(t)).predict(head,time(t),20,true).strength>.01 && first[j]==0) first[j]=time(t);
+        }
+        assertTrue(first[1]>0 && first[1]<first[0]);
+        for(boolean staticHead:new boolean[]{true,false}) {
+            PitchPredictor predictor=new PitchPredictor(PitchPredictor.Profile.RELAXED);
+            PitchPredictor.Prediction prediction=null;
+            for(int i=0;i<=800;i++) {
+                double t=i*.01; Quaternion head=pitch(staticHead?0:signal(2.1,t)+signal(4.7,t));
+                prediction=predictor.onPose(head,time(t)).predict(head,time(t),20,true);
+            }
+            assertEquals(0,prediction.strength,.01);
+        }
+    }
     @Test public void stablePeriodicSignalsReduceErrorAtTheSameFutureTime() {
         for(double hz:new double[]{1.5,3,5,7}) {
             PitchPredictor predictor=new PitchPredictor(); double predictedError=0,baselineError=0;

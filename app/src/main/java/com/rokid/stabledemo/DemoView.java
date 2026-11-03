@@ -20,6 +20,7 @@ import com.rokid.stabledemo.core.Quaternion;
 import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.LevelFollow;
 import com.rokid.stabledemo.core.PitchPredictor;
+import com.rokid.stabledemo.core.GyroPredictor;
 import java.util.Locale;
 import java.util.function.Supplier;
 
@@ -49,6 +50,7 @@ final class DemoView extends View {
     private boolean predictionEnabled=true;
     private boolean followEnabled=true;
     private double predictionLeadMs=15;
+    private int gyroHorizonMs;
     private long startMs=-1, noticeUntilMs;
     private long referenceEpoch=Long.MIN_VALUE;
     private String notice="";
@@ -90,9 +92,13 @@ final class DemoView extends View {
     void setPowerStatus(Supplier<String> status) { powerStatus=status; }
     void setFollowEnabled(boolean enabled) { followEnabled=enabled; }
     void setPredictionOptions(boolean enabled,double leadMs) {
+        setPredictionOptions(enabled,leadMs,0);
+    }
+    void setPredictionOptions(boolean enabled,double leadMs,int gyroMs) {
         predictionEnabled=enabled;
+        gyroHorizonMs=GyroPredictor.validHorizon(gyroMs)?gyroMs:0;
         predictionLeadMs=Double.isFinite(leadMs)?Math.max(5,Math.min(20,leadMs)):15;
-        setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；跟随"+(followEnabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
+        setContentDescription("3DoF 打字机演示；预测"+(enabled?"开":"关")+"；陀螺外推"+gyroHorizonMs+"ms；跟随"+(followEnabled?"开":"关")+"；单击切换维稳，长按回中，双击返回");
     }
     void setFrameDurationNs(long duration) {
         if(duration>0 && duration<500_000_000L) appFrameMs=appFrameMs==0?duration*1e-6:appFrameMs*.9+duration*1e-7;
@@ -137,7 +143,8 @@ final class DemoView extends View {
         frame=playback.at(startMs < 0 ? 0 : now-startMs);
         MotionDiagnostics.Snapshot analysis=diagnostics.snapshot(drawStartNs);
         PitchPredictor.Prediction prediction=state.prediction.predict(state.relative,drawStartNs,predictionLeadMs,
-                predictionEnabled&&stabilized&&fresh);
+                predictionEnabled&&stabilized&&fresh).withGyro(state.relative,tracker.latestGyro().predict(
+                        state.relative,state.timestampNs,drawStartNs,gyroHorizonMs,stabilized&&fresh));
         drawStatus(canvas,state,fresh,now,analysis,prediction);
         Quaternion applied=Quaternion.IDENTITY,anchor=Quaternion.IDENTITY,baseline=Quaternion.IDENTITY;
         if (fresh) {
@@ -202,10 +209,25 @@ final class DemoView extends View {
         canvas.drawText(now < noticeUntilMs ? notice : status,20,46,small);
         canvas.drawText(String.format(Locale.ROOT,"样本%sms  绘制%sms  显示≈%s±%sms",number(s.sampleAgeMs),
                 number(s.cpuDrawMs),number(s.estimatedDisplayMs),number(s.uncertaintyMs)),20,59,small);
-        String forecast=!predictionEnabled?"预测关 · 普通补偿":!stabilized?"预测暂停 · 维稳已关":prediction.strength<.01
-                ?"预测开 · 正在识别稳定周期":String.format(Locale.ROOT,"预测开 · 周期%.2fHz · 强度%.0f%% · 前推%.1fms",
-                        prediction.frequencyHz,prediction.strength*100,prediction.horizonMs);
+        String gyro=gyroHorizonMs==0?"外推0ms":String.format(Locale.ROOT,"外推%dms%s",gyroHorizonMs,
+                prediction.gyroHorizonMs>0?"生效":"待用");
+        String periodic=!predictionEnabled?"周期关":prediction.periodicHorizonMs>0
+                ?String.format(Locale.ROOT,"周期%.1fHz %.0f%%",prediction.frequencyHz,prediction.strength*100)
+                :"周期待用:"+periodicReason(prediction.periodicStatus);
+        String forecast=!stabilized?"预测暂停 · 维稳已关":gyro+" · "+periodic;
         canvas.drawText(forecast,20,74,small);
+    }
+
+    private static String periodicReason(String status) {
+        switch(status) {
+            case "quality": return "质量";
+            case "cycles": return "周期数";
+            case "frequency_stability": return "频率稳定";
+            case "insufficient_motion": return "运动量";
+            case "trend": case "turn": case "model_mismatch": return "转向/趋势";
+            case "stale_sample": return "样本过旧";
+            default: return "识别中";
+        }
     }
 
     private void drawTextPanel(Canvas canvas,long now) {

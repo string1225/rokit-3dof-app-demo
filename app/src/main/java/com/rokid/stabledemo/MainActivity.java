@@ -33,6 +33,8 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
 import com.rokid.stabledemo.core.AxisProfile;
 import com.rokid.stabledemo.core.MotionDiagnostics;
+import com.rokid.stabledemo.core.GyroPredictor;
+import com.rokid.stabledemo.core.PitchPredictor;
 import com.rokid.stabledemo.power.PowerBenchmark;
 import com.rokid.stabledemo.power.PowerRecorder;
 import java.io.IOException;
@@ -46,7 +48,7 @@ public final class MainActivity extends ComponentActivity {
     private DemoView demo;
     private PowerTestView powerView;
     private LinearLayout menu;
-    private final Button[] options=new Button[5];
+    private final Button[] options=new Button[6];
     private TextView menuStatus;
     private TrackingController tracker;
     private PowerRecorder recorder;
@@ -64,6 +66,8 @@ public final class MainActivity extends ComponentActivity {
     private boolean predictionEnabled=true;
     private boolean followEnabled=true,imuRecordingEnabled;
     private float predictionLeadMs=15;
+    private int gyroHorizonMs;
+    private PitchPredictor.Profile periodicProfile=PitchPredictor.Profile.RELAXED;
     private long stageDurationMs=300_000;
     private final Window.OnFrameMetricsAvailableListener frameListener=(window,metrics,dropped) -> {
         if(mode==Mode.DOF && demo!=null) demo.setFrameDurationNs(metrics.getMetric(FrameMetrics.TOTAL_DURATION));
@@ -90,7 +94,12 @@ public final class MainActivity extends ComponentActivity {
         if(!Float.isFinite(followSpeed)||followSpeed<1||followSpeed>60) followSpeed=12f;
         demoAxes=AxisProfile.usesLegacyDemo(getIntent().getStringExtra("axes"));
         forceFusion=getIntent().getBooleanExtra("force_fusion",false);
-        predictionEnabled=getIntent().getBooleanExtra("prediction_enabled",true);
+        predictionEnabled=getIntent().getBooleanExtra("prediction_enabled",getPreferences(MODE_PRIVATE).getBoolean("prediction_enabled",true));
+        String profile=getIntent().getStringExtra("periodic_profile");
+        if(profile==null) profile=getPreferences(MODE_PRIVATE).getString("periodic_profile","relaxed");
+        periodicProfile="standard".equals(profile)?PitchPredictor.Profile.STANDARD:PitchPredictor.Profile.RELAXED;
+        gyroHorizonMs=getIntent().getIntExtra("gyro_prediction_ms",getPreferences(MODE_PRIVATE).getInt("gyro_prediction_ms",0));
+        if(!GyroPredictor.validHorizon(gyroHorizonMs)) gyroHorizonMs=0;
         followEnabled=getIntent().getBooleanExtra("follow_enabled",getPreferences(MODE_PRIVATE).getBoolean("follow_enabled",true));
         imuRecordingEnabled=getIntent().getBooleanExtra("imu_recording_enabled",false);
         predictionLeadMs=getIntent().getFloatExtra("prediction_lead_ms",15);
@@ -119,12 +128,14 @@ public final class MainActivity extends ComponentActivity {
     private void buildMenu(FrameLayout root) {
         float scale=Math.min(getResources().getDisplayMetrics().widthPixels/480f,getResources().getDisplayMetrics().heightPixels/640f);
         menu=new LinearLayout(this); menu.setOrientation(LinearLayout.VERTICAL); menu.setGravity(Gravity.CENTER);
+        menu.setPadding(0,Math.round(80*scale),0,Math.round(80*scale));
         menu.addView(label("选择测试",24*scale));
         for(int i=0;i<options.length;i++) {
             final int index=i;
             Button button=new Button(this); options[i]=button;
-            button.setText(i==0?"3DoF 测试":i==1?"续航测试 · 25分钟":i==2?"预测补偿 · "+(predictionEnabled?"开":"关")
-                    :i==3?"浮窗跟随 · "+(followEnabled?"开":"关"):"IMU 录制 · "+(imuRecordingEnabled?"开":"关"));
+            button.setText(i==0?"3DoF 测试":i==1?"续航测试 · 25分钟":i==2?periodicLabel()
+                    :i==3?"浮窗跟随 · "+(followEnabled?"开":"关"):i==4?"IMU 录制 · "+(imuRecordingEnabled?"开":"关")
+                    :"陀螺外推 · "+gyroHorizonMs+" ms");
             if(i==1 && stageDurationMs!=300_000) button.setText("续航缩时验收 · 每项"+(stageDurationMs/1000)+"秒");
             button.setTextColor(Color.GREEN); button.setAllCaps(false); button.setPadding(0,0,0,0);
             button.setTextSize(TypedValue.COMPLEX_UNIT_PX,22*scale); button.setDefaultFocusHighlightEnabled(false);
@@ -138,15 +149,19 @@ public final class MainActivity extends ComponentActivity {
                 }
                 return false;
             });
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(Math.round(370*scale),Math.round(50*scale));
-            lp.topMargin=Math.round(12*scale); menu.addView(button,lp);
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(Math.round(370*scale),Math.round(44*scale));
+            lp.topMargin=Math.round(8*scale); menu.addView(button,lp);
         }
         TextView guide=label("单击切换 · 双击选中 · 长按退出",16*scale);
         LinearLayout.LayoutParams guideLp=new LinearLayout.LayoutParams(-1,Math.round(36*scale));
-        guideLp.topMargin=Math.round(12*scale); menu.addView(guide,guideLp);
+        guideLp.topMargin=Math.round(8*scale); menu.addView(guide,guideLp);
         menuStatus=label("IMU录制需开启 · 双击返回停止并导出",14*scale);
+        menuStatus.setMaxLines(2);
         menuStatus.setPadding(Math.round(25*scale),0,Math.round(25*scale),0); menu.addView(menuStatus);
         root.addView(menu,new FrameLayout.LayoutParams(-1,-1)); highlightSelection();
+    }
+    private String periodicLabel() {
+        return "周期预测 · "+(!predictionEnabled?"关":periodicProfile==PitchPredictor.Profile.STANDARD?"原门槛":"宽松");
     }
     private TextView label(String text,float size) {
         TextView view=new TextView(this); view.setText(text); view.setTextColor(Color.GREEN);
@@ -188,24 +203,34 @@ public final class MainActivity extends ComponentActivity {
         if(selected==0) beginDof();
         else if(selected==1) requestPower();
         else if(selected==2) {
-            predictionEnabled=!predictionEnabled; options[2].setText("预测补偿 · "+(predictionEnabled?"开":"关"));
-            menuStatus.setText("预测已"+(predictionEnabled?"开启":"关闭")+" · 选择3DoF开始对比");
+            if(!predictionEnabled) { predictionEnabled=true; periodicProfile=PitchPredictor.Profile.STANDARD; }
+            else if(periodicProfile==PitchPredictor.Profile.STANDARD) periodicProfile=PitchPredictor.Profile.RELAXED;
+            else predictionEnabled=false;
+            getPreferences(MODE_PRIVATE).edit().putBoolean("prediction_enabled",predictionEnabled)
+                    .putString("periodic_profile",periodicProfile==PitchPredictor.Profile.STANDARD?"standard":"relaxed").apply();
+            options[2].setText(periodicLabel());
+            menuStatus.setText(predictionEnabled?"周期模型仅在满足门槛时介入 · 可搭配陀螺外推":"周期预测已关 · 外推仍按所选毫秒运行");
         } else if(selected==3) {
             followEnabled=!followEnabled;
             getPreferences(MODE_PRIVATE).edit().putBoolean("follow_enabled",followEnabled).apply();
             options[3].setText("浮窗跟随 · "+(followEnabled?"开":"关"));
             menuStatus.setText(followEnabled?"偏移超20%才跟随 · 超50%立即回中":"锚点固定 · 仅长按回中 · 选择3DoF开始");
-        } else {
+        } else if(selected==4) {
             imuRecordingEnabled=!imuRecordingEnabled;
             options[4].setText("IMU 录制 · "+(imuRecordingEnabled?"开":"关"));
             menuStatus.setText(imuRecordingEnabled?"进入3DoF开始录制 · 双击返回停止并导出":"IMU录制已关闭 · 后续3DoF不保存原始数据");
+        } else {
+            gyroHorizonMs=GyroPredictor.nextHorizon(gyroHorizonMs);
+            getPreferences(MODE_PRIVATE).edit().putInt("gyro_prediction_ms",gyroHorizonMs).apply();
+            options[5].setText("陀螺外推 · "+gyroHorizonMs+" ms");
+            menuStatus.setText(gyroHorizonMs==0?"陀螺外推已关 · 周期预测独立选择":"陀螺外推"+gyroHorizonMs+"ms · 选择3DoF开始对比");
         }
     }
     private void beginDof() {
         if(!resumed) return;
         stopDof("restart"); mode=Mode.DOF; menu.setVisibility(View.GONE); powerView.setVisibility(View.GONE); demo.setVisibility(View.VISIBLE);
         MotionDiagnostics diagnostics=new MotionDiagnostics();
-        demo.setFollowEnabled(followEnabled); demo.setPredictionOptions(predictionEnabled,predictionLeadMs);
+        demo.setFollowEnabled(followEnabled); demo.setPredictionOptions(predictionEnabled,predictionLeadMs,gyroHorizonMs);
         loggingError="";
         try {
             recorder=new PowerRecorder(this,"3dof_diagnostics");
@@ -214,7 +239,12 @@ public final class MainActivity extends ComponentActivity {
             recorder.metadata("follow_enabled",followEnabled); recorder.metadata("imu_recording_enabled",imuRecordingEnabled);
             recorder.metadata("follow_start_content_fraction",com.rokid.stabledemo.core.LevelFollow.FOLLOW_START_FRACTION);
             recorder.metadata("prediction_enabled",predictionEnabled); recorder.metadata("prediction_display_lead_ms",predictionLeadMs);
-            recorder.metadata("prediction_policy","Project-owned periodic pitch model, 1..8Hz and at least 3 cycles. Sample age plus display lead capped at 20ms, stale age >25ms rejected, added pitch capped at 0.75 degrees. Model confidence gates prediction; no optical latency calibration.");
+            recorder.metadata("periodic_profile",periodicProfile==PitchPredictor.Profile.STANDARD?"standard":"relaxed");
+            recorder.metadata("periodic_min_quality",periodicProfile.minQuality); recorder.metadata("periodic_min_cycles",periodicProfile.minCycles);
+            recorder.metadata("periodic_required_stable_fits",periodicProfile.requiredStableFits);
+            recorder.metadata("periodic_frequency_tolerance_hz",periodicProfile.frequencyToleranceHz);
+            recorder.metadata("gyro_prediction_ms",gyroHorizonMs);
+            recorder.metadata("prediction_policy","Pitch-only: gyro uses a fixed 0/15/20ms horizon from the source pose timestamp, not draw time; sample/gyro age >25ms, pose/gyro separation >20ms, speed >180deg/s or rate change >3000deg/s^2 rejected. Periodic model 1..8Hz uses the selected quality/cycle/stability profile and sample age + display lead capped at 20ms. When both are active, confidence blends their corrections instead of summing full forecasts. Total added pitch capped at 0.75deg. Follow uses measured pose. No optical latency calibration.");
             recorder.metadata("content_top_screen_px",80+DemoView.CONTENT_TOP);
             recorder.metadata("content_bottom_screen_px",80+DemoView.CONTENT_BOTTOM);
             recorder.metadata("content_center_screen_y_px",80+(DemoView.CONTENT_TOP+DemoView.CONTENT_BOTTOM)/2);
@@ -237,7 +267,7 @@ public final class MainActivity extends ComponentActivity {
             if(motionLog!=null && !motionLog.error().isEmpty()) return motionLog.error();
             return "IMU录制关 · "+(recorder!=null?recorder.displayStatus():"耗电记录不可用");
         });
-        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics,predictionEnabled,imuLog);
+        tracker=new TrackingController(this,demoAxes,forceFusion,diagnostics,predictionEnabled,imuLog,periodicProfile,gyroHorizonMs>0);
         tracker.start(); demo.begin(tracker,diagnostics); demo.requestFocus();
     }
     private void stopDof(String reason) {

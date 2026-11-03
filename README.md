@@ -1,4 +1,4 @@
-# Rokid 3DoF 诊断与续航测试 · v0.5.1
+# Rokid 3DoF 诊断与续航测试 · v0.6.0
 
 适用于所提供 `GlassesBareDevSample.zip` 对应的 Rokid 开发机：Android 12+、480×640、黑底单绿色显示，安全区 Y=80..560。应用直接运行在眼镜上，提供3DoF文字维稳/抖动诊断，以及自动五阶段续航测试。无需手机或网络；续航媒体阶段使用本机麦克风和摄像头。
 
@@ -11,7 +11,7 @@
    adb shell am start -n com.rokid.stabledemo/.MainActivity
    ```
 
-2. 首页有「3DoF 测试」「续航测试 · 25分钟」「预测补偿 · 开/关」「浮窗跟随 · 开/关」「IMU 录制 · 开/关」。预测和跟随默认开，IMU录制每次启动默认关；后三项只切换设置，选择第一项开始3DoF。跟随选择会保存。触屏直接选；眼镜单击循环五项、双击选中、长按退出。Rokid 将双击编码为 BACK，因此专用菜单内的返回事件用于选中；系统 Home 可以离开应用。
+2. 首页有六项：「3DoF 测试」「续航测试 · 25分钟」「周期预测 · 关/原门槛/宽松」「浮窗跟随 · 开/关」「IMU 录制 · 开/关」「陀螺外推 · 0/15/20 ms」。首次使用周期预测默认宽松、陀螺外推默认0（关闭）、跟随默认开；这三项选择会保存，IMU录制每次启动默认关。后四项只切换设置，选择第一项开始3DoF。触屏直接选；眼镜单击循环六项、双击选中、长按退出。Rokid 将双击编码为 BACK，因此专用菜单内的返回事件用于选中；系统 Home 可以离开应用。
 3. 进入3DoF后保持头部静止片刻；有效姿态就绪后开始7行循环打字。跟随开时，转头先快速补偿；浮窗中心在X或Y任一方向偏移超过黑色内容区宽/高的20%后才慢跟随，回到20%范围内就停。偏移超过50%时仍直接跳回内容区中心。跟随关时，锚点固定在本段跟踪的相对方向，不慢跟随、不越界回中，单击切换维稳也不移动锚点；长按才手动回中。歪头时继续横滚反向补偿，保持IMU重力方向对应的水平。
 4. 3DoF内单击切换「维稳开／关」，文字与播放进度继续；长按立即水平回中（不吸收横滚）；双击/返回停止并保存。下方显示曲线、频率、RMS、绘制频率及延迟估计。
 
@@ -46,18 +46,50 @@ v0.3.1修正启动时轻微歪头会被保留为固定倾斜的问题。Android�
 
 v0.4增加本项目实现的单频周期预测，无新增第三方依赖。x-io Fusion仍负责备用六轴融合；预测器读取融合后的真实姿态。在传感器线程用最近约3.5秒数据拟合正弦/余弦、偏置和线性趋势，每100ms更新模型；绘制只读取不可变快照，不等待拟合。
 
-首版识别1–8Hz稳定俯仰，要求至少3个周期、连续稳定频率及较高拟合质量，振幅范围0.04–5°；静止和非周期动作保持普通补偿。识别需要几个周期，静止时显示「正在识别稳定周期」正常。预测强度缓入，失锁快速衰减；突发转头、大残差或超过80ms采样断流会清空模型。关闭预测时也不执行模型训练。
+识别1–8Hz稳定俯仰，振幅范围0.04–5°、线性趋势绝对值小于3°/秒。v0.6增加两套可对照的介入门槛：
+
+| 周期预测档位 | 去趋势后拟合质量 | 最少周期数 | 连续稳定拟合次数 | 相邻拟合频率差 |
+| --- | --- | --- | --- | --- |
+| 原门槛 | >0.94 | 3 | 3 | <0.12 Hz |
+| 宽松 | >0.88 | 2 | 2 | <0.18 Hz |
+
+首页循环「关→原门槛→宽松→关」，首次默认宽松。两档都需要周期识别，不保证不规则动作也会介入；放宽后仍保留振幅/趋势/突发转头检查、采样过旧拒绝和修正限幅。预测强度缓入，失锁快速衰减；突发转头、大残差或超过80ms采样断流会清空模型。周期预测关时不执行拟合，但可独立使用陀螺外推。
 
 只把模型预测的俯仰增量加到最新真实姿态上，不用拟合值替换真实姿态，不预测yaw/roll。采集时刻到目标时刻的总预测限制20ms，额外修正限制0.75°；样本到绘制开始超过25ms时不预测。默认目标为绘制开始后15ms，总时长包含样本年龄。慢跟随、50%越界回中均使用实测姿态，预测不会主动移动锚点。参考系切换/后台恢复后重新识别周期。
 
-首页第三项可开/关，返回后重新进入3DoF对比。界面显示识别周期、实际强度与总前推毫秒；现有单击维稳开关、长按回中、双击返回不变。也可显式启动：
+首页第三项选择周期档位，返回后重新进入3DoF对比。界面显示实际周期强度或等待原因（质量、周期数、频率稳定等），以及陀螺外推的选择与实际生效状态；现有单击维稳开关、长按回中、双击返回不变。也可显式启动：
 
 ```powershell
 adb shell am force-stop com.rokid.stabledemo
-adb shell am start -n com.rokid.stabledemo/.MainActivity --ez prediction_enabled true --ef prediction_lead_ms 15
+adb shell am start -n com.rokid.stabledemo/.MainActivity --ez prediction_enabled true --es periodic_profile relaxed --ef prediction_lead_ms 15
 ```
 
 `prediction_lead_ms`为绘制开始之后的工程目标时间，范围5–20ms；实际总预测仍受20ms上限约束。它没有经过眼镜显示延迟标定，不会直接采用界面上较粗的显示延迟估算。规律性纯上下位移不属于本版预测能力。频段是模型启用范围，不代表已经在目标眼镜上证明该范围内都稳定。
+
+## 陀螺仪短时外推与组合对照
+
+v0.6增加独立的「陀螺外推 · 0/15/20 ms」。0关闭这一路，15和20使用绘制时已经收到的最新原始陀螺仪，在当前融合姿态上按局部角速度外推俯仰。**15/20 ms从本帧真实姿态的采集时间开始计算，是固定时长**，不额外叠加样本年龄；这与周期模型的`prediction_lead_ms`含义不同。只改变俯仰，不预测yaw/roll，也不移动跟随锚点。
+
+系统融合路径在非零档位额外注册原始陀螺仪，不要求开启IMU录制。Fusion备用路径复用已有陀螺回调；旧Demo轴向对角速度做相同的右手坐标变换。新采样需连续两次，姿态和陀螺样本年龄均不得超过25ms，两者采集时间差不得超过20ms；超过180°/秒、角速度变化超过3000°/秒²、超过80ms断流、初始化或接近竖直视线时暂停外推。附加修正仍限幅±0.75°。
+
+周期预测与陀螺外推可以独立开启。两者都可用时，按周期模型强度混合两种俯仰修正，避免对同一运动叠加两次完整预测。周期未锁定时使用陀螺外推；陀螺不可用时保留符合条件的周期预测。界面中「外推生效」指这一路当前可用，实际贡献仍受周期置信度混合影响。维稳关闭时两路都暂停。
+
+建议先保持跟随设置和动作一致，并开启IMU录制，逐项比较：
+
+| 测试方向 | 陀螺外推 | 周期预测 |
+| --- | --- | --- |
+| 普通补偿基线 | 0 ms | 关 |
+| 原周期模型 | 0 ms | 原门槛 |
+| 放宽周期门槛 | 0 ms | 宽松 |
+| 单独短时外推 | 15 ms、20 ms分别测试 | 关 |
+| 混合方案 | 15 ms、20 ms分别测试 | 宽松（也可比较原门槛） |
+
+```powershell
+adb shell am force-stop com.rokid.stabledemo
+adb shell am start -n com.rokid.stabledemo/.MainActivity --ei gyro_prediction_ms 20 --ez prediction_enabled false --ez imu_recording_enabled true
+```
+
+`gyro_prediction_ms`只接受整数0、15、20，非法值关闭。`periodic_profile`接受`standard`或`relaxed`；`prediction_enabled=false`仅关闭周期一路。启动参数覆盖本次启动的已保存设置，菜单手动选择会更新保存值。上述参数均需目标眼镜验证，软件残差收益不能代替光学效果实测。
 
 ## 诊断曲线与延迟
 
@@ -119,7 +151,9 @@ adb shell am start -n com.rokid.stabledemo/.MainActivity --ez follow_enabled fal
 adb pull /sdcard/Download/RokidTests ./RokidTests
 ```
 
-v0.4在保留旧列顺序的基础上追加普通补偿残差/RMS、`prediction_enabled`、`prediction_horizon_ms`、`periodic_hz`、`prediction_strength`、`prediction_delta_deg`。开关为1但强度/时长为0表示设置已开而该帧未应用预测；未识别的频率留空。元数据记录开关、前推设置和限幅策略。
+v0.4在保留旧列顺序的基础上追加普通补偿残差/RMS、`prediction_enabled`、`prediction_horizon_ms`、`periodic_hz`、`prediction_strength`、`prediction_delta_deg`。v0.6继续保留这些列：`prediction_enabled`和`prediction_strength`仍描述周期一路，`prediction_horizon_ms`为实际采用两路时长的最大值，`prediction_delta_deg`为最终总修正。周期强度为0时，陀螺外推仍可能生效。
+
+v0.6为帧和指标CSV追加`periodic_horizon_ms`、`periodic_delta_deg`、`periodic_fit_quality`、`periodic_fit_cycles`、`periodic_stable_fits`、`periodic_status`、`gyro_selected_ms`、`gyro_horizon_ms`、`gyro_delta_deg`、`gyro_status`、`prediction_method`（none/gyro/periodic/blend）、`prediction_applied`。两路delta是混合后的各自贡献，相加得到总修正；质量/周期数描述最新一次拟合。状态包含quality/cycles/frequency_stability等等待原因，及stale_sample/rapid_change等拒绝原因。元数据记录本段所选档位和全部门槛，便于按同一配置汇总实际介入比例。
 
 视频、照片以及原始报告保存在应用目录，导出失败时仍保留原件：
 
@@ -192,7 +226,7 @@ adb shell am start -n com.rokid.stabledemo/.MainActivity --ez force_fusion true
 | 跟随关时大幅转头/等待/切维稳 | 锚点不变，不超界回中；转回原方向可再次看到，长按才移动到眼前 |
 | IMU录制开后进入3DoF，再双击返回 | 测试中明确显示录制状态，返回后停止并导出三个IMU文件 |
 | IMU录制关后进入3DoF | 显示录制关，不创建IMU文件 |
-| 双击/返回 | 返回五项菜单，停止传感器并保存导出 |
+| 双击/返回 | 返回六项菜单，停止传感器并保存导出 |
 | 切后台再回来 | 重新初始化与回正，避免跨暂停积分 |
 | 静止一至五分钟 | 观察静止抖动与航向漂移，记录数据源、采样率与回正次数 |
 

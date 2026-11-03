@@ -4,7 +4,16 @@ import java.util.ArrayDeque;
 
 /** Single-frequency pitch increment prediction. Fit on the sensor thread; State is immutable. */
 public final class PitchPredictor {
+    public enum Profile {
+        STANDARD(.94,3,3,.12), RELAXED(.88,2,2,.18);
+        public final double minQuality,minCycles,frequencyToleranceHz;
+        public final int requiredStableFits;
+        Profile(double quality,double cycles,int fits,double tolerance) {
+            minQuality=quality; minCycles=cycles; requiredStableFits=fits; frequencyToleranceHz=tolerance;
+        }
+    }
     private static final long WINDOW_NS=3_500_000_000L,FIT_NS=100_000_000L;
+    private final Profile profile;
     private final ArrayDeque<Sample> samples=new ArrayDeque<>();
     private long lastNs,lastStoredNs,lastFitNs;
     private Quaternion previous;
@@ -12,10 +21,16 @@ public final class PitchPredictor {
     private int stableFits;
     private Model model;
     private State state=State.EMPTY;
+    private double fitQuality=Double.NaN,fitCycles=Double.NaN;
+    private String gate="warming_up";
+
+    public PitchPredictor() { this(Profile.STANDARD); }
+    public PitchPredictor(Profile profile) { this.profile=profile==null?Profile.STANDARD:profile; }
 
     public void reset() {
         samples.clear(); lastNs=lastStoredNs=lastFitNs=0; previous=null;
         strength=targetStrength=0; candidateHz=Double.NaN; stableFits=0; model=null; state=State.EMPTY;
+        fitQuality=fitCycles=Double.NaN; gate="warming_up";
     }
 
     public State onPose(Quaternion head,long timestampNs) {
@@ -29,7 +44,7 @@ public final class PitchPredictor {
             double pitchRate=Math.abs(pitch-previousPitch)/dt;
             boolean turn=rate>Math.max(35,pitchRate*1.3+15);
             boolean jump=model!=null && Math.abs(pitch-model.value(timestampNs))>Math.max(.3,model.amplitude*.6);
-            if(turn || jump) { reset(); dt=0; }
+            if(turn || jump) { reset(); gate=turn?"turn":"model_mismatch"; dt=0; }
         }
         previous=head; previousPitch=pitch; lastNs=timestampNs;
         if(lastStoredNs==0 || timestampNs-lastStoredNs>=8_000_000L) {
@@ -40,12 +55,17 @@ public final class PitchPredictor {
                 && timestampNs-samples.peekFirst().time>=1_000_000_000L) {
             lastFitNs=timestampNs;
             Model fit=fit(timestampNs);
-            boolean good=fit!=null && fit.quality>.94 && fit.amplitude>=.04 && fit.amplitude<=5
-                    && Math.abs(fit.trend)<3 && fit.span*fit.hz>=3;
+            fitQuality=fit==null?Double.NaN:fit.quality; fitCycles=fit==null?Double.NaN:fit.span*fit.hz;
+            gate=fit==null?"insufficient_motion":fit.quality<=profile.minQuality?"quality"
+                    :fit.amplitude<.04 || fit.amplitude>5?"amplitude":Math.abs(fit.trend)>=3?"trend"
+                    :fitCycles<profile.minCycles?"cycles":"frequency_stability";
+            boolean good=fit!=null && "frequency_stability".equals(gate);
             if(good) {
-                stableFits=Double.isFinite(candidateHz)&&Math.abs(candidateHz-fit.hz)<.12?stableFits+1:1;
+                stableFits=Double.isFinite(candidateHz)&&Math.abs(candidateHz-fit.hz)<profile.frequencyToleranceHz?stableFits+1:1;
                 candidateHz=fit.hz;
-                if(stableFits>=3) { model=fit; targetStrength=clamp((fit.quality-.94)/.06,0,1); }
+                if(stableFits>=profile.requiredStableFits) {
+                    model=fit; targetStrength=clamp((fit.quality-profile.minQuality)/(1-profile.minQuality),0,1); gate="active";
+                }
                 else targetStrength=0;
             } else { stableFits=0; candidateHz=Double.NaN; targetStrength=0; }
         }
@@ -54,7 +74,7 @@ public final class PitchPredictor {
             double tau=targetStrength>strength?.35:.06;
             strength+=(targetStrength-strength)*(-Math.expm1(-dt/tau));
         }
-        state=new State(model,timestampNs,strength); return state;
+        state=new State(model,timestampNs,strength,fitQuality,fitCycles,stableFits,gate); return state;
     }
 
     private Model fit(long nowNs) {
@@ -125,22 +145,33 @@ public final class PitchPredictor {
     private static double clamp(double x,double low,double high) { return Math.max(low,Math.min(high,x)); }
 
     public static final class State {
-        public static final State EMPTY=new State(null,0,0);
+        public static final State EMPTY=new State(null,0,0,Double.NaN,Double.NaN,0,"warming_up");
         private final Model model; private final long sampleNs; private final double strength;
-        private State(Model model,long sampleNs,double strength) { this.model=model; this.sampleNs=sampleNs; this.strength=strength; }
+        private final double quality,cycles;
+        private final int stableFits;
+        private final String gate;
+        private State(Model model,long sampleNs,double strength,double quality,double cycles,int fits,String gate) {
+            this.model=model; this.sampleNs=sampleNs; this.strength=strength;
+            this.quality=quality; this.cycles=cycles; stableFits=fits; this.gate=gate;
+        }
         public Prediction predict(Quaternion measured,long renderNs,double displayLeadMs,boolean enabled) {
             long age=renderNs-sampleNs;
-            if(!enabled || model==null || strength<.001 || age<0 || age>25_000_000L
-                    ||sampleNs-model.fitAt>250_000_000L || !Double.isFinite(displayLeadMs))
-                return Prediction.unavailable(measured,enabled);
+            String reason=!enabled?"disabled":age<0 || age>25_000_000L?"stale_sample"
+                    :!Double.isFinite(displayLeadMs)?"invalid_lead":model==null?gate:strength<.001?"ramping_up"
+                    :sampleNs-model.fitAt>250_000_000L?"expired_model":"active";
+            if(!"active".equals(reason)) return unavailable(measured,enabled,reason);
             double horizon=clamp(age*1e-6+Math.max(0,displayLeadMs),0,20);
             long target=sampleNs+Math.round(horizon*1e6);
             double correction=clamp((model.wave(target)-model.wave(sampleNs))*strength,-.75,.75);
             double[] forward=measured.rotate(new double[]{0,0,-1});
             double horizontal=Math.hypot(forward[0],forward[2]);
-            if(horizontal<.1) return Prediction.unavailable(measured,enabled);
+            if(horizontal<.1) return unavailable(measured,enabled,"vertical_view");
             Quaternion delta=Quaternion.axisAngle(-forward[2]/horizontal,0,forward[0]/horizontal,Math.toRadians(correction));
-            return new Prediction(delta.multiply(measured),enabled,horizon,model.hz,strength,correction);
+            return new Prediction(delta.multiply(measured),enabled,horizon,model.hz,strength,correction,
+                    horizon,correction,quality,cycles,stableFits,"active",0,0,0,"disabled");
+        }
+        private Prediction unavailable(Quaternion measured,boolean enabled,String reason) {
+            return new Prediction(measured,enabled,0,Double.NaN,0,0,0,0,quality,cycles,stableFits,reason,0,0,0,"disabled");
         }
     }
     public static final class Prediction {
@@ -148,11 +179,43 @@ public final class PitchPredictor {
         public final Quaternion pose;
         public final boolean enabled;
         public final double horizonMs,frequencyHz,strength,correctionDeg;
-        private Prediction(Quaternion pose,boolean enabled,double horizon,double hz,double strength,double correction) {
+        public final double periodicHorizonMs,periodicCorrectionDeg,fitQuality,fitCycles;
+        public final int stableFits,gyroRequestedMs;
+        public final double gyroHorizonMs,gyroCorrectionDeg;
+        public final String periodicStatus,gyroStatus;
+        private Prediction(Quaternion pose,boolean enabled,double horizon,double hz,double strength,double correction,
+                double periodicHorizon,double periodicCorrection,double quality,double cycles,int fits,String periodicStatus,
+                int gyroRequested,double gyroHorizon,double gyroCorrection,String gyroStatus) {
             this.pose=pose; this.enabled=enabled; horizonMs=horizon; frequencyHz=hz; this.strength=strength; correctionDeg=correction;
+            periodicHorizonMs=periodicHorizon; periodicCorrectionDeg=periodicCorrection; fitQuality=quality; fitCycles=cycles;
+            stableFits=fits; this.periodicStatus=periodicStatus; gyroRequestedMs=gyroRequested;
+            gyroHorizonMs=gyroHorizon; gyroCorrectionDeg=gyroCorrection; this.gyroStatus=gyroStatus;
         }
         public static Prediction unavailable(Quaternion measured,boolean enabled) {
-            return new Prediction(measured,enabled,0,Double.NaN,0,0);
+            return new Prediction(measured,enabled,0,Double.NaN,0,0,0,0,Double.NaN,Double.NaN,0,
+                    enabled?"warming_up":"disabled",0,0,0,"disabled");
+        }
+        /** Blend two estimates of the same pitch motion; never add two full forecasts. */
+        public Prediction withGyro(Quaternion measured,GyroPredictor.Result gyro) {
+            double periodic=periodicCorrectionDeg,contribution=0;
+            if(gyro.horizonMs>0) {
+                periodic=strength>0?clamp(periodicCorrectionDeg/strength,-.75,.75)*strength:0;
+                contribution=gyro.correctionDeg*(1-strength);
+            }
+            double correction=clamp(periodic+contribution,-.75,.75);
+            Quaternion predicted=measured;
+            if(correction!=0) {
+                double[] forward=measured.rotate(new double[]{0,0,-1});
+                double horizontal=Math.hypot(forward[0],forward[2]);
+                predicted=Quaternion.axisAngle(-forward[2]/horizontal,0,forward[0]/horizontal,
+                        Math.toRadians(correction)).multiply(measured);
+            }
+            return new Prediction(predicted,enabled,Math.max(periodicHorizonMs,gyro.horizonMs),frequencyHz,strength,correction,
+                    periodicHorizonMs,periodic,fitQuality,fitCycles,stableFits,periodicStatus,
+                    gyro.requestedMs,gyro.horizonMs,contribution,gyro.status);
+        }
+        public String method() {
+            return gyroHorizonMs>0?(periodicHorizonMs>0?"blend":"gyro"):(periodicHorizonMs>0?"periodic":"none");
         }
     }
     private static final class Sample {

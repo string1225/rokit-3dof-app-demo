@@ -15,6 +15,7 @@ import com.rokid.stabledemo.core.MotionDiagnostics;
 import com.rokid.stabledemo.core.Quaternion;
 import com.rokid.stabledemo.core.LevelReference;
 import com.rokid.stabledemo.core.PitchPredictor;
+import com.rokid.stabledemo.core.GyroPredictor;
 
 /** Sensor callbacks, native state and reference updates all run on one dedicated thread. */
 final class TrackingController implements SensorEventListener {
@@ -42,7 +43,10 @@ final class TrackingController implements SensorEventListener {
     private final boolean demoAxes;
     private final boolean forceFusion;
     private final MotionDiagnostics diagnostics;
-    private final PitchPredictor predictor=new PitchPredictor();
+    private final PitchPredictor predictor;
+    private final GyroPredictor gyroPredictor=new GyroPredictor();
+    private volatile GyroPredictor.State gyroState=GyroPredictor.State.EMPTY;
+    private final boolean useGyroPrediction;
     private final boolean trainPrediction;
     private final ImuLog imuLog;
     private volatile Snapshot snapshot = new Snapshot(Quaternion.IDENTITY, 0, false, "等待 IMU", 0);
@@ -69,13 +73,19 @@ final class TrackingController implements SensorEventListener {
         this(context,demoAxes,forceFusion,diagnostics,trainPrediction,null);
     }
     TrackingController(Context context,boolean demoAxes,boolean forceFusion,MotionDiagnostics diagnostics,boolean trainPrediction,ImuLog imuLog) {
+        this(context,demoAxes,forceFusion,diagnostics,trainPrediction,imuLog,PitchPredictor.Profile.STANDARD,false);
+    }
+    TrackingController(Context context,boolean demoAxes,boolean forceFusion,MotionDiagnostics diagnostics,boolean trainPrediction,
+            ImuLog imuLog,PitchPredictor.Profile profile,boolean useGyroPrediction) {
         manager=(SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         this.demoAxes=demoAxes; this.forceFusion=forceFusion;
         this.diagnostics=diagnostics;
         this.trainPrediction=trainPrediction;
         this.imuLog=imuLog;
+        predictor=new PitchPredictor(profile); this.useGyroPrediction=useGyroPrediction;
     }
     Snapshot latest() { return snapshot; }
+    GyroPredictor.State latestGyro() { return gyroState; }
 
     void start() {
         if (thread != null) return;
@@ -90,6 +100,7 @@ final class TrackingController implements SensorEventListener {
         handler.post(() -> {
             active=false; generation++;
             manager.unregisterListener(this);
+            gyroPredictor.reset(); gyroState=GyroPredictor.State.EMPTY;
             releaseNative(); reference=null;
             snapshot=new Snapshot(Quaternion.IDENTITY,0,false,"已停止",0);
             ending.quitSafely();
@@ -106,6 +117,7 @@ final class TrackingController implements SensorEventListener {
         if (!active) return;
         manager.unregisterListener(this); releaseNative();
         generation++; reference=null; predictor.reset();
+        gyroPredictor.reset(); gyroState=GyroPredictor.State.EMPTY;
         if(diagnostics!=null) diagnostics.reset();
         lastGyroNs=lastIntegratedNs=lastAccelNs=lastPoseNs=0; hz=0;
         while (candidate < 3) {
@@ -118,6 +130,10 @@ final class TrackingController implements SensorEventListener {
                     if (candidate < 2) {
                         registered=manager.registerListener(this,sensor,5000,0,handler);
                         sourceName=candidate==0 ? "系统融合" : "旋转矢量";
+                        if(registered && useGyroPrediction) {
+                            Sensor gyro=manager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+                            if(gyro!=null) manager.registerListener(this,gyro,Math.max(5000,gyro.getMinDelay()),0,handler);
+                        }
                     } else {
                         Sensor accel=manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                         gyroPeriodUs=Math.max(5000,sensor.getMinDelay());
@@ -159,6 +175,11 @@ final class TrackingController implements SensorEventListener {
         if (!active) return;
         try {
             int type=event.sensor.getType();
+            if(type==Sensor.TYPE_GYROSCOPE && useGyroPrediction && event.values.length>=3) {
+                double[] rate=demoAxes?Quaternion.demoVector(event.values[0],event.values[1],event.values[2])
+                        :new double[]{event.values[0],event.values[1],event.values[2]};
+                gyroState=gyroPredictor.onGyro(rate[0],rate[1],rate[2],event.timestamp,SystemClock.elapsedRealtimeNanos());
+            }
             if (sourceType != Sensor.TYPE_GYROSCOPE) {
                 if (type != sourceType || event.values.length < 3 || event.timestamp <= lastPoseNs) return;
                 float[] q=new float[4];
@@ -196,6 +217,7 @@ final class TrackingController implements SensorEventListener {
         if (initializing) {
             if(imuLog!=null) imuLog.pose(absolute,null,timestampNs,sourceType,referenceEpoch,true);
             reference=null; predictor.reset();
+            gyroPredictor.reset(); gyroState=GyroPredictor.State.EMPTY;
             snapshot=new Snapshot(Quaternion.IDENTITY,timestampNs,false,"请静止 · IMU 初始化",hz);
         } else {
             if (reference == null) { reference=new LevelReference(absolute,demoAxes); referenceEpoch++; predictor.reset(); if(diagnostics!=null) diagnostics.reset(); }
