@@ -6,7 +6,8 @@ public final class GyroPredictor {
     public static final int MAX_HORIZON_MS=100;
     public enum Model {
         LATEST("latest","恒速",1), WINDOW3("window3","三采样",3),
-        WINDOW5("window5","五采样",5), WINDOW10("window10","十采样",10);
+        WINDOW5("window5","五采样",5), WINDOW10("window10","十采样",10),
+        TREND10("trend10","趋势10",10);
         public final String id,label;
         public final int window;
         Model(String id,String label,int window) { this.id=id; this.label=label; this.window=window; }
@@ -18,12 +19,13 @@ public final class GyroPredictor {
     }
     private final long[] times=new long[10];
     private final double[][] rates=new double[10][3];
+    private final GyroTrend trend=new GyroTrend();
     private int count;
     private long lastNs;
     private double lastX,lastY,lastZ;
     private State state=State.EMPTY;
 
-    public void reset() { lastNs=0; count=0; state=State.EMPTY; }
+    public void reset() { lastNs=0; count=0; trend.reset("reset"); state=State.EMPTY; }
     public State onGyro(double x,double y,double z,long sampleNs,long receivedNs) {
         if(sampleNs<=0 || sampleNs<=lastNs || receivedNs<sampleNs) return state;
         if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z)) { reset(); return state; }
@@ -32,16 +34,18 @@ public final class GyroPredictor {
         if(dt<=0 || dt>.08) status="warming_up";
         else if(norm(x,y,z)>Math.toRadians(180)) status="fast_turn";
         else if(norm(x-lastX,y-lastY,z-lastZ)/dt>Math.toRadians(3000)) status="rapid_change";
-        if(!"active".equals(status)) count=0;
+        if(!"active".equals(status)) { count=0; trend.reset(status); }
         if(count==10) {
             System.arraycopy(times,1,times,0,9);
             for(int i=0;i<9;i++) System.arraycopy(rates[i+1],0,rates[i],0,3);
             count=9;
         }
         times[count]=sampleNs; rates[count][0]=x; rates[count][1]=y; rates[count][2]=z; count++;
-        Fit[] fits={fit(3,sampleNs),fit(5,sampleNs),fit(10,sampleNs)};
+        GyroTrend.Snapshot segmented=trend.add(x,y,z,sampleNs);
+        Fit[] fits={fit(3,sampleNs),fit(5,sampleNs),fit(10,sampleNs),
+                new Fit(segmented.samples,segmented.span,segmented.ax,segmented.ay,segmented.az,segmented.error)};
         lastNs=sampleNs; lastX=x; lastY=y; lastZ=z;
-        state=new State(x,y,z,fits,sampleNs,receivedNs,status); return state;
+        state=new State(x,y,z,fits,segmented,sampleNs,receivedNs,status); return state;
     }
     private Fit fit(int window,long sampleNs) {
         int n=Math.min(count,window),begin=count-n;
@@ -77,13 +81,14 @@ public final class GyroPredictor {
         }
     }
     public static final class State {
-        public static final State EMPTY=new State(0,0,0,new Fit[]{Fit.EMPTY,Fit.EMPTY,Fit.EMPTY},0,0,"no_gyro");
+        public static final State EMPTY=new State(0,0,0,new Fit[]{Fit.EMPTY,Fit.EMPTY,Fit.EMPTY,Fit.EMPTY},GyroTrend.Snapshot.EMPTY,0,0,"no_gyro");
         private final double x,y,z;
         private final Fit[] fits;
+        private final GyroTrend.Snapshot trend;
         private final long sampleNs,receivedNs;
         private final String status;
-        private State(double x,double y,double z,Fit[] fits,long sample,long received,String status) {
-            this.x=x; this.y=y; this.z=z; this.fits=fits; sampleNs=sample; receivedNs=received; this.status=status;
+        private State(double x,double y,double z,Fit[] fits,GyroTrend.Snapshot trend,long sample,long received,String status) {
+            this.x=x; this.y=y; this.z=z; this.fits=fits; this.trend=trend; sampleNs=sample; receivedNs=received; this.status=status;
         }
         /** Legacy pitch-only, source-timestamp horizon, retained for paired algorithm controls. */
         public Result predict(Quaternion measured,long poseNs,long readNs,int ms,boolean enabled) {
@@ -105,24 +110,26 @@ public final class GyroPredictor {
                     :receivedNs>readNs || poseNs>readNs?"future_sample"
                     :poseNs<=0 || readNs-poseNs>25_000_000L || readNs-sampleNs>25_000_000L
                         || Math.abs(sampleNs-poseNs)>20_000_000L?"stale_sample":"active";
-            Fit fit=model==Model.LATEST?Fit.EMPTY:fits[model==Model.WINDOW3?0:model==Model.WINDOW5?1:2];
+            boolean segmented=model==Model.TREND10;
+            Fit fit=model==Model.LATEST?Fit.EMPTY:fits[model==Model.WINDOW3?0:model==Model.WINDOW5?1:segmented?3:2];
             double[] forward=measured.rotate(new double[]{0,0,-1}); double horizontal=Math.hypot(forward[0],forward[2]);
             double rate=horizontal>=.1?Math.toDegrees(measured.rotate(new double[]{-y,x,0})[1]/horizontal):0;
             double acceleration=horizontal>=.1?Math.toDegrees(measured.rotate(new double[]{-fit.ay,fit.ax,0})[1]/horizontal):0;
             double correction=0,effective=0,raw=0,rotation=0;
             Quaternion predicted=measured;
-            String motion=model==Model.LATEST?"constant_rate":"warming_window";
+            String motion=model==Model.LATEST?"constant_rate":segmented?"trend_"+trend.status:"warming_window";
             if("active".equals(reason)) {
                 if(!fullAxes && horizontal<.1) reason="vertical_view";
                 else {
                     double t=horizon*.001; effective=t;
-                    boolean window=model!=Model.LATEST && fit.samples==model.window;
+                    boolean window=segmented?trend.trendSamples>=3:model!=Model.LATEST && fit.samples==model.window;
                     double speed=fullAxes?norm(x,y,z):Math.toRadians(Math.abs(rate));
                     boolean noisy=fit.error>Math.toRadians(Math.max(1.5,.15*Math.toDegrees(norm(x,y,z))));
                     double vx=fullAxes?x:Math.toRadians(rate),vy=fullAxes?y:0,vz=fullAxes?z:0;
                     double ax=fullAxes?fit.ax:Math.toRadians(acceleration),ay=fullAxes?fit.ay:0,az=fullAxes?fit.az:0;
                     double dx=vx*t,dy=vy*t,dz=vz*t;
-                    if(window && noisy) { acceleration=0; motion="noisy_window"; }
+                    if(segmented && speed<Math.toRadians(.5)) { dx=dy=dz=0; effective=0; motion="stop_guard"; }
+                    else if(window && noisy) { acceleration=0; motion="noisy_window"; }
                     else if(window && speed<Math.toRadians(.5)) { dx=dy=dz=0; effective=0; motion="stop_guard"; }
                     else if(window) {
                         double along=(vx*ax+vy*ay+vz*az)/Math.max(speed,1e-12);
@@ -150,7 +157,7 @@ public final class GyroPredictor {
             long target=appliedHorizon>0?(fullAxes?readNs+requested*1_000_000L:poseNs+Math.round(horizon*1e6)):0;
             return new Result(requested,appliedHorizon,correction,reason,model.id,motion,
                     model==Model.LATEST?(sampleNs>0?1:0):fit.samples,fit.span,rate,acceleration,effective*1000,raw,cap,
-                    sampleNs,receivedNs,poseNs,readNs,target,predicted,fullAxes,rotation);
+                    sampleNs,receivedNs,poseNs,readNs,target,predicted,fullAxes,rotation,segmented?trend:GyroTrend.Snapshot.EMPTY);
         }
     }
     public static final class Result {
@@ -161,14 +168,22 @@ public final class GyroPredictor {
         public final long sampleNs,receivedNs,poseNs,readNs,targetNs;
         public final boolean limited,fullAxes;
         public final Quaternion pose;
+        public final int trendSamples,discardedSamples;
+        public final String trendStatus,segmentReset;
+        public final long segmentStartNs;
+        public final double trendAccelerationX,trendAccelerationY,trendAccelerationZ;
         private Result(int requested,double horizon,double correction,String status,String model,String motion,int samples,
                 double window,double rate,double acceleration,double effective,double raw,double cap,long sample,long received,long source,long read,
-                long target,Quaternion pose,boolean fullAxes,double rotation) {
+                long target,Quaternion pose,boolean fullAxes,double rotation,GyroTrend.Snapshot trend) {
             requestedMs=requested; horizonMs=horizon; correctionDeg=correction; this.status=status;
             this.model=model; this.motion=motion; this.samples=samples; windowMs=window; rateDegS=rate;
             accelerationDegS2=acceleration; effectiveMotionMs=effective; unclampedDeg=raw; maxCorrectionDeg=cap;
             sampleNs=sample; receivedNs=received; poseNs=source; readNs=read; limited=Math.abs(raw)>cap;
             targetNs=target; this.pose=pose; this.fullAxes=fullAxes; rotationDeg=rotation;
+            trendSamples=trend.trendSamples; trendStatus="trend10".equals(model)?trend.status:"not_selected";
+            segmentStartNs=trend.segmentNs; segmentReset="trend10".equals(model)?trend.resetReason:"not_selected";
+            discardedSamples=trend.discarded;
+            trendAccelerationX=Math.toDegrees(trend.ax); trendAccelerationY=Math.toDegrees(trend.ay); trendAccelerationZ=Math.toDegrees(trend.az);
         }
     }
 }

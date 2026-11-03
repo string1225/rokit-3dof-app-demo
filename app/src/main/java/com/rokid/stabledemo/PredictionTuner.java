@@ -78,7 +78,7 @@ final class PredictionTuner extends LinearLayout {
     private void refresh() {
         title.setText("三轴 · 显示提前量 "+horizon+" ms · "+(selected==0?"[时长]":"时长"));
         title.setTextColor(Color.GREEN);
-        String modelText=model==GyroPredictor.Model.LATEST?"1采样":model.window+"点试验",capText="限"+cap+"°";
+        String modelText=model==GyroPredictor.Model.LATEST?"1采样":model==GyroPredictor.Model.TREND10?"10点趋势":model.window+"点试验",capText="限"+cap+"°";
         modelButton.setText(selected==1?"["+modelText+"]":modelText);
         capButton.setText(selected==2?"["+capText+"]":capText); doneButton.setText(selected==3?"[完成]":"完成");
         capButton.setContentDescription("预测修正上限"+cap+"度");

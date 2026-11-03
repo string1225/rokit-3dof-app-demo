@@ -61,6 +61,9 @@ public class PredictionOptionsInstrumentedTest {
                 ((Button)root.findViewWithTag("gyro_model")).performClick();
                 assertTrue(a.demoView().getContentDescription().toString().contains("十采样"));
                 ((Button)root.findViewWithTag("gyro_model")).performClick();
+                assertEquals("10点趋势",((Button)root.findViewWithTag("gyro_model")).getText().toString());
+                assertTrue(a.demoView().getContentDescription().toString().contains("趋势10"));
+                ((Button)root.findViewWithTag("gyro_model")).performClick();
                 assertTrue(a.demoView().getContentDescription().toString().contains("恒速"));
                 ((Button)root.findViewWithTag("gyro_model")).performClick();
                 assertTrue(a.demoView().getContentDescription().toString().contains("三采样"));
@@ -153,7 +156,7 @@ public class PredictionOptionsInstrumentedTest {
                 argument.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE,17);
                 assertTrue(slider.performAccessibilityAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(),argument));
                 assertEquals(17,slider.getProgress());
-                ((Button)root.findViewWithTag("gyro_model")).performClick();
+                for(int i=0;i<4;i++) ((Button)root.findViewWithTag("gyro_model")).performClick();
                 ((Button)root.findViewWithTag("gyro_cap")).performClick();
                 try { assertSame(recorder.get(),logField.get(a)); assertSame(tracker.get(),trackerField.get(a)); }
                 catch(IllegalAccessException e) { throw new AssertionError(e); }
@@ -165,12 +168,19 @@ public class PredictionOptionsInstrumentedTest {
             while(!recorder.get().isFinished() && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(50);
             assertTrue(recorder.get().isFinished()); File directory=recorder.get().directory();
             String[] lines=read(new File(directory,"motion_frames.csv")).split("\n"); List<String> header=Arrays.asList(lines[0].split(",",-1));
+            assertEquals(header.indexOf("baseline_residual_rotation_deg")+1,header.indexOf("gyro_trend_samples"));
             int before=0,after=0;
             for(int i=1;i<lines.length;i++) {
                 String[] row=lines[i].split(",",-1); assertEquals(header.size(),row.length);
                 double selected=Double.parseDouble(row[header.indexOf("gyro_selected_ms")]);
                 if(selected==0) before++;
-                if(selected==17) { after++; assertEquals("window3",row[header.indexOf("gyro_model")]); assertEquals(3,Double.parseDouble(row[header.indexOf("gyro_cap_deg")]),0); }
+                if(selected==17) {
+                    after++; assertEquals("trend10",row[header.indexOf("gyro_model")]); assertEquals(3,Double.parseDouble(row[header.indexOf("gyro_cap_deg")]),0);
+                    assertNotEquals("not_selected",row[header.indexOf("gyro_trend_status")]);
+                    assertTrue(Long.parseLong(row[header.indexOf("gyro_segment_start_elapsed_ns")])>0);
+                    int trendSamples=Integer.parseInt(row[header.indexOf("gyro_trend_samples")]);
+                    assertTrue(trendSamples==0 || trendSamples==3 || trendSamples==5);
+                }
                 if(Double.parseDouble(row[header.indexOf("gyro_horizon_ms")])>0) {
                     long source=Long.parseLong(row[header.indexOf("source_pose_elapsed_ns")]);
                     long read=Long.parseLong(row[header.indexOf("prediction_read_elapsed_ns")]);
@@ -184,7 +194,8 @@ public class PredictionOptionsInstrumentedTest {
             }
             assertTrue(before>5); assertTrue(after>5);
             String events=read(new File(directory,"stages.jsonl")); assertTrue(events.contains("prediction_options"));
-            assertTrue(events.contains("gyro_prediction_ms=17"));
+            assertTrue(events.contains("gyro_prediction_ms=17")); assertTrue(events.contains("gyro_model=trend10"));
+            assertTrue(read(new File(directory,"metadata.json")).contains("trend_policy"));
         } finally {
             context.getSharedPreferences("MainActivity",Context.MODE_PRIVATE).edit().remove("gyro_prediction_ms")
                     .remove("gyro_model").remove("gyro_cap_deg").commit();

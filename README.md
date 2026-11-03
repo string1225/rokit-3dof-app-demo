@@ -1,4 +1,4 @@
-# Rokid 3DoF 诊断与续航测试 · v0.7.0
+# Rokid 3DoF 诊断与续航测试 · v0.7.1
 
 适用于所提供 `GlassesBareDevSample.zip` 对应的 Rokid 开发机：Android 12+、480×640、黑底单绿色显示，安全区 Y=80..560。应用直接运行在眼镜上，提供3DoF文字维稳/抖动诊断，以及自动五阶段续航测试。无需手机或网络；续航媒体阶段使用本机麦克风和摄像头。
 
@@ -80,8 +80,19 @@ v0.7优先扩展为**完整三轴四元数外推**，覆盖yaw/pitch/roll，并�
 | 3点试验（`window3`） | 最近3次原始陀螺采样，约覆盖10 ms。 |
 | 5点试验（`window5`） | 最近5次原始陀螺采样，约覆盖20 ms。 |
 | 10点试验（`window10`） | 最近10次原始陀螺采样，约覆盖45 ms。以上时长以200 Hz为例，不是显示帧数，实际跨度逐帧记录。 |
+| 10点趋势（`trend10`，v0.7.1新增） | 最多10点用于突变检测与趋势判断；确认最近3点的变化方向，最近5点一致时优先用5点估计加速度。遇到突变先扔掉旧段，不等重新收满10点。 |
 
 多点模式用真实时间戳对三轴角速度分别做线性拟合，估计角加速度；当前速度保留最新值，避免历史均值造成拖后。加速项以20 ms时间常数衰减；沿运动方向减速超过30°/秒²时沿当前转轴积分到预计停止，不自行预测反向；总角速度小于0.5°/秒时停止附加预测。拟合噪声过大或点数不足时退回恒速。拟合在传感器线程做固定大小计算，绘制读取不可变快照，不等待未来采样或几秒训练。更多历史不保证更准，长窗口也可能滞后于真实反向，因此保留全部窗口作实验对照，默认1采样恒速。突然停止和真实反向仍需要新传感器数据，不能提前知道任意急停。
+
+### 10点趋势：先分段，再判断最近3／5点
+
+原3／5／10点试验保留整段斜率拟合，新增的「10点趋势」是独立的逻辑判断模式。所有点均为当前及之前的采样，不读取未来数据，也不将10点角速度取平均。最多10点建立变化幅度的稳健基准；当新点偏离近期趋势、已确认的加速度发生反向，或观测角速度反向时，从当前点开始新段，之前的历史不再参与此模式。单点尖峰后回到原来速度也会重新分段。
+
+在当前段内，先检查最近3点的两个速度增量是否支持同一变化方向，再检查最近5点是否同向、斜率接近；若都成立，用最近5点估计加速度，否则只使用已确认的最近3点。方向用三轴向量比较，兼顾yaw/pitch/roll；仍从最新角速度出发传播四元数。新段少于3点或趋势未确认时按当前速度外推；实际速度低于0.5°/秒立即停止附加预测，不等收满窗口。原来的加速衰减、减速到停限幅、时间戳和总角度保护继续适用。
+
+初始工程门槛：新点速度创新量超过 `max(2°/秒, 4×历史二阶差分范数中位数＋3×最近拟合RMS)` 时截断，二阶差分按真实时间间隔缩放。已确认加速度与新速度增量夹角超过120°、增量超过0.2°/秒时截断。趋势确认要求加速度范数至少30°/秒²、增量方向噪声容限0.1°/秒、拟合RMS不超过 `max(0.35°/秒, 10%×加速度范数×窗口跨度)`；3／5点斜率向量余弦至少0.85、大小比0.5～2才采用5点。这些门槛尚需真机验证，原始3／5／10点和1采样模式可在同一面板切换对照。
+
+对用户之前9段原始IMU记录进行因果软件回放，统一读取后20ms目标、0.75°限幅，完整旋转角RMS为：不预测0.307920°、1采样0.063216°、原10点0.066115°、新10点趋势0.066691°。新模式能在合成急停/突变测试中截断旧趋势，但这批真实数据的总体误差尚未超过恒速模式，所以默认仍保留1采样。该比较以之后的系统融合姿态为参考，不能当作眼镜发光时刻的实际视觉误差。
 
 总旋转修正限幅可选择0.75°（默认）、3°、6°，三轴共用一个角度上限。旧限幅会使高速/长时长测试饱和；例如30°/秒×100 ms为3°，0.75°上限会截断，而3°/6°可以容纳。状态栏显示「触顶」，CSV记录原始修正与限幅标记。增加限幅后可能更容易观察到超前/过冲，应保持同一限幅比较不同模型和时长。
 
@@ -173,6 +184,8 @@ v0.6为帧和指标CSV追加`periodic_horizon_ms`、`periodic_delta_deg`、`peri
 v0.7继续保留旧列顺序，追加`gyro_model`、`gyro_motion`、`gyro_window_samples`、`gyro_window_ms`、`pitch_rate_deg_s`、`pitch_acceleration_deg_s2`、`gyro_effective_motion_ms`（减速积分所覆盖的运动时长，不替代目标时长）、`gyro_unclamped_deg`（三轴总旋转角）、`gyro_cap_deg`、`gyro_limited`、`gyro_axes`、`gyro_rotation_deg`；以及整数纳秒`source_pose_elapsed_ns`、`gyro_sample_elapsed_ns`、`gyro_received_elapsed_ns`、`prediction_read_elapsed_ns`、`prediction_target_elapsed_ns`。`gyro_selected_ms`为读取后的提前量，`gyro_horizon_ms`为加入样本年龄后的总时长；目标时刻为读取时刻＋提前量，不是实测呈现时刻，暂停/不可用时为0。`prediction_delta_deg`和两路delta仍仅描述俯仰贡献；完整三轴输出见新增四元数。
 
 帧CSV另保存`applied_qx/qy/qz/qw`、`anchor_qx/qy/qz/qw`、`baseline_qx/qy/qz/qw`，以及`residual_rotation_deg`、`baseline_residual_rotation_deg`（完整旋转角的软件误差）。界面曲线/RMS仍为俯仰，不能拿它独自评价yaw/roll。`stages.jsonl`以`prediction_options`事件保存每次实时调参，元数据仅记录会话初始配置，含`prediction_axes=xyz_quaternion`和`prediction_time_basis=read_time_plus_lead`。
+
+v0.7.1追加趋势诊断列：`gyro_trend_samples`（已确认的3／5点，0表示未确认）、`gyro_trend_status`（warming/constant_rate/unconfirmed/confirmed3/confirmed5）、`gyro_segment_start_elapsed_ns`、`gyro_segment_reset`、`gyro_discarded_samples`、`gyro_trend_acceleration_x/y/z_deg_s2`（已确认趋势的三轴加速度估计，是否参与传播仍看`gyro_status`/`gyro_motion`）。重置原因包括innovation、trend_reversal、rate_reversal、transient_return及已有的断流/快速变化保护。段起点、原因、丢弃数量在本段内持续记录，不能把每帧同一原因重复计为新截断；应按段起点去重。非趋势模式状态为not_selected、相关数值为0。`metadata.json`中的`trend_policy`保存判断门槛，实时切换仍见`prediction_options`。
 
 视频、照片以及原始报告保存在应用目录，导出失败时仍保留原件：
 
